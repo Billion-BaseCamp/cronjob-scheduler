@@ -13,7 +13,7 @@ from app.core.logger import logger, log_job_start, log_job_end
 async def financial_year_creation_job():
     """
     Cron job to create financial years for all clients without current FY
-    Runs every 1 hour
+    Runs every 1 minute
     """
     job_name = "Financial Year Creation Job"
     log_job_start(job_name)
@@ -55,7 +55,7 @@ async def setup_financial_year_job():
     
     scheduler.add_job(
         financial_year_creation_job,  # Async function directly!
-        trigger=CronTrigger(hour='*/1'),  # Every 1 hour
+        trigger=CronTrigger(minute='*/1'),  # Every 1 hour
         id="financial_year_creation_job",
         name="Financial Year Creation Job",
         replace_existing=True,
