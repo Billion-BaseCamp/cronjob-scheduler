@@ -1,6 +1,6 @@
 """
 Financial Year Creation Cron Job
-Runs every 1 hour to create financial years for clients
+Runs daily at midnight to create financial years for clients
 """
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -13,7 +13,7 @@ from app.core.logger import logger, log_job_start, log_job_end
 async def financial_year_creation_job():
     """
     Cron job to create financial years for all clients without current FY
-    Runs every 1 minute
+    Runs daily at midnight
     """
     job_name = "Financial Year Creation Job"
     log_job_start(job_name)
@@ -55,14 +55,14 @@ async def setup_financial_year_job():
     
     scheduler.add_job(
         financial_year_creation_job,  # Async function directly!
-        trigger=CronTrigger(minute='*/1'),  # Every 1 hour
+        trigger=CronTrigger(hour=0, minute=0),  # Every day at midnight
         id="financial_year_creation_job",
         name="Financial Year Creation Job",
         replace_existing=True,
         max_instances=1  
     )
 
-    logger.success("Scheduled: Financial Year Creation Job (Every 1 hour)")
+    logger.success("Scheduled: Financial Year Creation Job (Daily at midnight)")
 
 
 def start_scheduler():
