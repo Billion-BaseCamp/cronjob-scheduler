@@ -51,7 +51,7 @@ async def setup_quarter_transition_job():
 
     scheduler.add_job(
         quarter_transition_job,
-        trigger=CronTrigger(hour=0, minute=5),  # Daily at 00:05 (after financial year job)
+        trigger=CronTrigger( minute='*/1'),  # Daily at 00:05 (after financial year job)
         id="quarter_transition_job",
         name="Quarter Transition Job",
         replace_existing=True,
