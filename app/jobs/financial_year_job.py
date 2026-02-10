@@ -55,7 +55,7 @@ async def setup_financial_year_job():
     
     scheduler.add_job(
         financial_year_creation_job,  # Async function directly!
-        trigger=CronTrigger(hour=0, minute=0),  # Every day at midnight
+        trigger=CronTrigger(minute='"*/1"'),  # Every 1 midnight
         id="financial_year_creation_job",
         name="Financial Year Creation Job",
         replace_existing=True,
