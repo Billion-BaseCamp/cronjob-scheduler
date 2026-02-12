@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from nucleus.models.common_models import Client
+from nucleus.models.common_models.client import Client
 from nucleus.models.advance_tax_models.financial_year import FinancialYear
 from app.core.logger import logger
 from sqlalchemy.exc import SQLAlchemyError

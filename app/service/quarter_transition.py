@@ -10,8 +10,8 @@ from typing import Tuple, Dict
 from sqlalchemy.exc import SQLAlchemyError
 
 
-from nuclues.models.advance_tax_models.financial_year import FinancialYear
-from nuclues.models.advance_tax_models.quarter import Quarter
+from nucleus.models.advance_tax_models.financial_year import FinancialYear
+from nucleus.models.advance_tax_models.quarter import Quarter
 from app.core.logger import logger
 
 

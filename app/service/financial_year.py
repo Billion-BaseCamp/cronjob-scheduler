@@ -6,7 +6,7 @@ from typing import List, Tuple, Dict
 from fastapi import HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
-from nucleus.models.common_models import Client
+from nucleus.models.common_models.client import Client
 from nucleus.models.advance_tax_models.financial_year import FinancialYear
 from app.core.logger import logger
 from app.service.quarter import create_quarters_for_financial_year
