@@ -6,8 +6,8 @@ from typing import List, Tuple, Dict
 from fastapi import HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.models.client import Client
-from app.models.financial_year import FinancialYear
+from nucleus.models.common_models import Client
+from nucleus.models.advance_tax_models.financial_year import FinancialYear
 from app.core.logger import logger
 from app.service.quarter import create_quarters_for_financial_year
 
