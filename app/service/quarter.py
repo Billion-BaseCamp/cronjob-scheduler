@@ -9,7 +9,7 @@ from typing import List, Dict
 from fastapi import HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.models.quarter import Quarter
+from nucleus.models.advance_tax_models.quarter import Quarter
 from app.core.logger import logger
 
 
