@@ -26,6 +26,11 @@ async def quarter_transition_job():
 
         if result["status"] == "success":
             logger.info(f"Job completed: {result['message']}")
+            if result.get("quarters_backfilled", 0) > 0:
+                logger.info(
+                    f"Backfilled {result['quarters_backfilled']} quarter(s) "
+                    f"for {result['financial_years_backfilled']} financial year(s)"
+                )
             logger.info(
                 f"Current quarter FY {result['current_fy_q'][0]} Q{result['current_fy_q'][1]}: "
                 f"{result['current_quarters_updated']} quarter(s) set to active/unlocked"
@@ -48,6 +53,9 @@ async def quarter_transition_job():
 async def setup_quarter_transition_job():
     """Register the quarter transition cron job with the scheduler."""
     logger.info("Setting up Quarter Transition cron job...")
+
+    logger.info("Running initial Quarter Transition job...")
+    await quarter_transition_job()
 
     scheduler.add_job(
         quarter_transition_job,

@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.models.financial_year import FinancialYear
 from app.models.quarter import Quarter
 from app.core.logger import logger
+from app.service.financial_year import backfill_missing_quarters
 
 
 # Status values aligned with app.service.quarter
@@ -81,7 +82,7 @@ async def transition_quarters_to_current_state(db: AsyncSession) -> Dict:
     - Mark the previous quarter as completed (status=completed).
 
     Idempotent: only updates rows that are not already in the target state.
-    Assumes quarters already exist in the database.
+    Backfills missing quarters for the current FY before applying transitions.
 
     Returns:
         Dict with status, message, current_quarters_updated, previous_quarters_updated,
@@ -100,6 +101,14 @@ async def transition_quarters_to_current_state(db: AsyncSession) -> Dict:
     )
 
     try:
+        backfill_result = await backfill_missing_quarters(db)
+        if backfill_result["quarters_backfilled"] > 0:
+            logger.info(
+                f"Backfilled {backfill_result['quarters_backfilled']} quarter(s) "
+                f"for {backfill_result['financial_years_backfilled']} financial year(s) "
+                "before transition"
+            )
+
         # Resolve financial year IDs for current and previous FY
         stmt_current = select(FinancialYear.id).where(
             FinancialYear.financial_year == current_fy_str
@@ -161,6 +170,8 @@ async def transition_quarters_to_current_state(db: AsyncSession) -> Dict:
             "previous_fy_q": (prev_fy_str, q_prev),
             "current_quarters_updated": current_updated,
             "previous_quarters_updated": previous_updated,
+            "financial_years_backfilled": backfill_result["financial_years_backfilled"],
+            "quarters_backfilled": backfill_result["quarters_backfilled"],
         }
     except SQLAlchemyError as e:
         await db.rollback()
@@ -172,6 +183,8 @@ async def transition_quarters_to_current_state(db: AsyncSession) -> Dict:
             "previous_fy_q": (prev_fy_str, q_prev),
             "current_quarters_updated": 0,
             "previous_quarters_updated": 0,
+            "financial_years_backfilled": 0,
+            "quarters_backfilled": 0,
         }
     except Exception as e:
         await db.rollback()
@@ -183,4 +196,6 @@ async def transition_quarters_to_current_state(db: AsyncSession) -> Dict:
             "previous_fy_q": (prev_fy_str, q_prev),
             "current_quarters_updated": 0,
             "previous_quarters_updated": 0,
+            "financial_years_backfilled": 0,
+            "quarters_backfilled": 0,
         }
