@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from datetime import date
 from uuid import UUID
 from typing import List, Tuple, Dict
@@ -8,8 +8,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.client import Client
 from app.models.financial_year import FinancialYear
+from app.models.quarter import Quarter
 from app.core.logger import logger
-from app.service.quarter import create_quarters_for_financial_year
+from app.service.quarter import (
+    create_quarters_for_financial_year,
+    backfill_missing_quarters_for_financial_year,
+)
 
 
 def calculate_current_financial_year() -> Tuple[str, int]:
@@ -139,6 +143,79 @@ async def create_financial_year_with_quarters(
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
+async def get_financial_years_needing_quarter_backfill(
+    db: AsyncSession,
+) -> List[Tuple[UUID, date]]:
+    """
+    Find current-FY records that have fewer than 4 quarters.
+
+    Returns:
+        List of (financial_year_id, start_date) tuples.
+    """
+    current_fy, _ = calculate_current_financial_year()
+
+    stmt = (
+        select(FinancialYear.id, FinancialYear.start_date)
+        .outerjoin(Quarter, Quarter.financial_year_id == FinancialYear.id)
+        .where(FinancialYear.financial_year == current_fy)
+        .group_by(FinancialYear.id, FinancialYear.start_date)
+        .having(func.count(Quarter.id) < 4)
+    )
+    result = await db.execute(stmt)
+    return result.all()
+
+
+async def backfill_missing_quarters(db: AsyncSession) -> Dict:
+    """
+    Backfill missing quarters for current financial year records.
+
+    Handles FY rows created without quarters (e.g. by another service).
+    Safe to re-run: only creates quarter numbers that do not yet exist.
+    """
+    fy_records = await get_financial_years_needing_quarter_backfill(db)
+
+    if not fy_records:
+        logger.info("No financial years need quarter backfill")
+        return {
+            "financial_years_backfilled": 0,
+            "quarters_backfilled": 0,
+            "backfill_failed": 0,
+        }
+
+    logger.info(f"Found {len(fy_records)} financial year(s) needing quarter backfill")
+
+    financial_years_backfilled = 0
+    quarters_backfilled = 0
+    backfill_failed = 0
+
+    for fy_id, start_date in fy_records:
+        try:
+            created = await backfill_missing_quarters_for_financial_year(
+                fy_id,
+                start_date.year,
+                db,
+            )
+            await db.commit()
+            if created > 0:
+                financial_years_backfilled += 1
+                quarters_backfilled += created
+        except Exception as e:
+            await db.rollback()
+            backfill_failed += 1
+            logger.error(f"Failed to backfill quarters for FY {fy_id}: {str(e)}")
+
+    logger.info(
+        f"Quarter backfill completed: {financial_years_backfilled} FY(s), "
+        f"{quarters_backfilled} quarter(s) created, {backfill_failed} failed"
+    )
+
+    return {
+        "financial_years_backfilled": financial_years_backfilled,
+        "quarters_backfilled": quarters_backfilled,
+        "backfill_failed": backfill_failed,
+    }
+
+
 async def create_financial_years_for_all_clients(db: AsyncSession) -> Dict:
     """
     Cron job function: Create financial years for all clients without current FY
@@ -149,48 +226,55 @@ async def create_financial_years_for_all_clients(db: AsyncSession) -> Dict:
     try:
         logger.info("Starting financial year creation job...")
         
-        # Get clients without current FY
+        # Step 1: Create FY + quarters for clients missing current FY
         client_ids = await get_clients_without_current_fy(db)
-        
-        if not client_ids:
-            logger.info("No clients need financial year creation")
-            return {
-                "status": "success",
-                "message": "No clients need financial year creation",
-                "clients_processed": 0,
-                "financial_years_created": 0,
-                "quarters_created": 0
-            }
-        
-        # Create FY for each client
+
         success_count = 0
         failed_count = 0
         failed_clients = []
-        
-        for client_id in client_ids:
-            try:
-                await create_financial_year_with_quarters(client_id, db)
-                success_count += 1
-            except Exception as e:
-                failed_count += 1
-                failed_clients.append(str(client_id))
-                logger.error(f"Failed to create FY for client {client_id}: {str(e)}")
-        
+
+        if client_ids:
+            for client_id in client_ids:
+                try:
+                    await create_financial_year_with_quarters(client_id, db)
+                    success_count += 1
+                except Exception as e:
+                    failed_count += 1
+                    failed_clients.append(str(client_id))
+                    logger.error(f"Failed to create FY for client {client_id}: {str(e)}")
+        else:
+            logger.info("No clients need financial year creation")
+
+        # Step 2: Backfill quarters for FY records that exist without full quarter sets
+        backfill = await backfill_missing_quarters(db)
+
+        total_quarters_created = success_count * 4 + backfill["quarters_backfilled"]
+        has_failures = failed_count > 0 or backfill["backfill_failed"] > 0
+
         result = {
-            "status": "success" if failed_count == 0 else "partial",
-            "message": f"Created financial years for {success_count} clients",
+            "status": "partial" if has_failures else "success",
+            "message": (
+                f"Created financial years for {success_count} client(s); "
+                f"backfilled {backfill['quarters_backfilled']} quarter(s) "
+                f"for {backfill['financial_years_backfilled']} existing FY record(s)"
+            ),
             "clients_processed": len(client_ids),
             "financial_years_created": success_count,
-            "quarters_created": success_count * 4,
+            "quarters_created": total_quarters_created,
+            "financial_years_backfilled": backfill["financial_years_backfilled"],
+            "quarters_backfilled": backfill["quarters_backfilled"],
             "failed_count": failed_count,
-            "failed_clients": failed_clients if failed_clients else None
+            "backfill_failed": backfill["backfill_failed"],
+            "failed_clients": failed_clients if failed_clients else None,
         }
-        
+
         logger.success(
             f"Financial year creation job completed: "
-            f"{success_count} succeeded, {failed_count} failed"
+            f"{success_count} FY(s) created, "
+            f"{backfill['financial_years_backfilled']} FY(s) backfilled, "
+            f"{failed_count + backfill['backfill_failed']} failed"
         )
-        
+
         return result
         
     except Exception as e:

@@ -28,8 +28,12 @@ async def financial_year_creation_job():
             logger.info(f"Clients processed: {result['clients_processed']}")
             logger.info(f"Financial years created: {result['financial_years_created']}")
             logger.info(f"Quarters created: {result['quarters_created']}")
+            logger.info(
+                f"Quarters backfilled: {result.get('quarters_backfilled', 0)} "
+                f"for {result.get('financial_years_backfilled', 0)} existing FY record(s)"
+            )
             
-            if result.get('failed_count', 0) > 0:
+            if result.get('failed_count', 0) > 0 or result.get('backfill_failed', 0) > 0:
                 logger.warning(f"Failed clients: {result.get('failed_clients')}")
                 log_job_end(job_name, success=False)
             else:

@@ -2,6 +2,14 @@
 Quarter Transition Cron Job
 Runs on a schedule to unlock the current quarter and mark the previous quarter as completed.
 """
+import sys
+from pathlib import Path
+
+# Allow `python quarter_transition_job.py` from app/jobs (or anywhere).
+# When imported as app.jobs.quarter_transition_job, the package path is already set.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from apscheduler.triggers.cron import CronTrigger
 
 from app.db.database import AsyncSessionLocal
@@ -26,6 +34,11 @@ async def quarter_transition_job():
 
         if result["status"] == "success":
             logger.info(f"Job completed: {result['message']}")
+            if result.get("quarters_backfilled", 0) > 0:
+                logger.info(
+                    f"Backfilled {result['quarters_backfilled']} quarter(s) "
+                    f"for {result['financial_years_backfilled']} financial year(s)"
+                )
             logger.info(
                 f"Current quarter FY {result['current_fy_q'][0]} Q{result['current_fy_q'][1]}: "
                 f"{result['current_quarters_updated']} quarter(s) set to active/unlocked"
@@ -49,6 +62,9 @@ async def setup_quarter_transition_job():
     """Register the quarter transition cron job with the scheduler."""
     logger.info("Setting up Quarter Transition cron job...")
 
+    logger.info("Running initial Quarter Transition job...")
+    await quarter_transition_job()
+
     scheduler.add_job(
         quarter_transition_job,
         trigger=CronTrigger( minute='*/1'),  # Daily at 00:05 (after financial year job)
@@ -59,3 +75,9 @@ async def setup_quarter_transition_job():
     )
 
     logger.success("Scheduled: Quarter Transition Job (Daily at 00:05)")
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    asyncio.run(quarter_transition_job())

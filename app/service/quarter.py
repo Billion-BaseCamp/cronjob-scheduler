@@ -3,6 +3,7 @@ Quarter Service
 Handles quarter creation and management
 """
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from datetime import date
 from uuid import UUID
 from typing import List, Dict
@@ -148,5 +149,69 @@ async def create_quarters_for_financial_year(
     
     except Exception as e:
         logger.exception(f"Unexpected error creating quarters: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
+async def backfill_missing_quarters_for_financial_year(
+    financial_year_id: UUID,
+    fy_start_year: int,
+    db: AsyncSession,
+) -> int:
+    """
+    Create any missing quarters for an existing financial year.
+
+    Skips quarter numbers that already exist so this is safe to re-run.
+
+    Returns:
+        Number of quarters created.
+    """
+    try:
+        stmt = select(Quarter.quarter_number).where(
+            Quarter.financial_year_id == financial_year_id
+        )
+        result = await db.execute(stmt)
+        existing = set(result.scalars().all())
+
+        if len(existing) == 4:
+            return 0
+
+        today = date.today()
+        quarter_dates = get_quarter_dates(fy_start_year)
+        created = 0
+
+        for q_data in quarter_dates:
+            if q_data["quarter_number"] in existing:
+                continue
+
+            is_locked, status = determine_quarter_status(
+                q_data["start_date"],
+                q_data["end_date"],
+                today,
+            )
+
+            db.add(
+                Quarter(
+                    financial_year_id=financial_year_id,
+                    quarter_number=q_data["quarter_number"],
+                    start_date=q_data["start_date"],
+                    end_date=q_data["end_date"],
+                    is_locked=is_locked,
+                    status=status,
+                )
+            )
+            created += 1
+
+        if created:
+            logger.info(
+                f"Backfilled {created} missing quarter(s) for FY {financial_year_id}"
+            )
+        return created
+
+    except SQLAlchemyError as e:
+        logger.error(f"Database error backfilling quarters: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+    except Exception as e:
+        logger.exception(f"Unexpected error backfilling quarters: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 

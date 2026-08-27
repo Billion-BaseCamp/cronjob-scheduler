@@ -4,12 +4,14 @@ from app.service.financial_year import (
     calculate_current_financial_year,
     get_clients_without_current_fy,
     create_financial_year_with_quarters,
-    create_financial_years_for_all_clients
+    create_financial_years_for_all_clients,
+    backfill_missing_quarters,
 )
 from app.service.quarter import (
     get_quarter_dates,
     determine_quarter_status,
-    create_quarters_for_financial_year
+    create_quarters_for_financial_year,
+    backfill_missing_quarters_for_financial_year,
 )
 
 __all__ = [
@@ -21,10 +23,12 @@ __all__ = [
     "get_clients_without_current_fy",
     "create_financial_year_with_quarters",
     "create_financial_years_for_all_clients",
+    "backfill_missing_quarters",
     
     # Quarter service
     "get_quarter_dates",
     "determine_quarter_status",
-    "create_quarters_for_financial_year"
+    "create_quarters_for_financial_year",
+    "backfill_missing_quarters_for_financial_year",
 ]
 
