@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
 from app.core.logger import logger
+from app.jobs.birthday_reminder_job import setup_birthday_reminder_job
 from app.jobs.financial_year_job import setup_financial_year_job, start_scheduler, stop_scheduler
 from app.jobs.quarter_transition_job import setup_quarter_transition_job
 
@@ -18,6 +19,7 @@ async def lifespan(app: FastAPI):
         # Setup and start cron jobs
         await setup_financial_year_job()
         await setup_quarter_transition_job()
+        await setup_birthday_reminder_job()
         start_scheduler()
         
         logger.success("All cron jobs started successfully")
@@ -67,6 +69,11 @@ async def root():
                 "name": "Quarter Transition Job",
                 "schedule": "Daily at 00:05",
                 "description": "Unlocks current quarter (active), marks previous quarter as completed"
+            },
+            {
+                "name": "RM Birthday Email Job",
+                "schedule": "Daily at 06:00 Asia/Kolkata",
+                "description": "Emails each RM with today's client/family birthdays via Graph sendMail"
             }
         ]
     }

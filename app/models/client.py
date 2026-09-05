@@ -24,6 +24,7 @@ class Client(Base):
     parent_id: Mapped[UUID] = mapped_column(SQLUUID(as_uuid=True), nullable=True)
     family_relationship: Mapped[str] = mapped_column(String, nullable=False)
     is_advance_tax_payer: Mapped[bool] = mapped_column(Boolean, default=False)
+    advisor_id: Mapped[UUID] = mapped_column(SQLUUID(as_uuid=True), nullable=True)
    
     
     
