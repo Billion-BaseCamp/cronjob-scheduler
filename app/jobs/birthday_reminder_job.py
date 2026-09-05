@@ -1,5 +1,5 @@
 """
-RM birthday reminder emails at 11:00 IST.
+RM birthday reminder emails at 06:00 IST.
 """
 from apscheduler.triggers.cron import CronTrigger
 
@@ -32,11 +32,11 @@ async def setup_birthday_reminder_job():
 
     scheduler.add_job(
         birthday_reminder_job,
-        trigger=CronTrigger(hour=11, minute=0, timezone="Asia/Kolkata"),
-        id="birthday_reminder_ist_1100",
+        trigger=CronTrigger(hour=6, minute=0, timezone="Asia/Kolkata"),
+        id="birthday_reminder_ist_0600",
         name="RM Birthday Email Job",
         replace_existing=True,
         max_instances=1,
     )
 
-    logger.success("Scheduled: RM Birthday Email Job (Daily at 11:00 Asia/Kolkata)")
+    logger.success("Scheduled: RM Birthday Email Job (Daily at 06:00 Asia/Kolkata)")
