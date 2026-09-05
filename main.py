@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
+import nucleus.models  # noqa: F401  register Client, FY, Quarter, and related mappers
+
 from app.core.logger import logger
 from app.jobs.birthday_reminder_job import setup_birthday_reminder_job
 from app.jobs.financial_year_job import setup_financial_year_job, start_scheduler, stop_scheduler

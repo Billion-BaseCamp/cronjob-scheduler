@@ -10,9 +10,9 @@ from sqlalchemy.orm import aliased
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.models.advisor import Advisor
-from app.models.client import Client
-from app.models.login import Login
+from nucleus.models.common_models.advisor import Advisor
+from nucleus.models.common_models.client import Client
+from nucleus.models.common_models.login import Login
 from app.schema.birthday import BirthdayPerson
 from app.service.email_service import send_birthday_reminder_email
 
