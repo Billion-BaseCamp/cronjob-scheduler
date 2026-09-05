@@ -5,6 +5,7 @@ Runs daily at midnight to create financial years for clients
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from app.core.config import settings
 from app.db.database import AsyncSessionLocal
 from app.service.financial_year import create_financial_years_for_all_clients
 from app.core.logger import logger, log_job_start, log_job_end
@@ -16,6 +17,9 @@ async def financial_year_creation_job():
     Runs daily at midnight
     """
     job_name = "Financial Year Creation Job"
+    if not settings.FINANCIAL_YEAR_JOB_ENABLED:
+        logger.info("Skipping Financial Year Creation Job: FINANCIAL_YEAR_JOB_ENABLED is false")
+        return
     log_job_start(job_name)
     
     try:
@@ -48,7 +52,10 @@ scheduler = AsyncIOScheduler()
 async def setup_financial_year_job():
     """Setup the financial year creation cron job"""
     logger.info("Setting up Financial Year Creation cron job...")
-    
+
+    if not settings.FINANCIAL_YEAR_JOB_ENABLED:
+        logger.info("Financial Year Creation Job disabled: FINANCIAL_YEAR_JOB_ENABLED is false")
+        return
 
     logger.info("Running initial Financial Year creation job...")
     await financial_year_creation_job()

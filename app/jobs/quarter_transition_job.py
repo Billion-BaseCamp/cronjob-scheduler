@@ -4,6 +4,7 @@ Runs on a schedule to unlock the current quarter and mark the previous quarter a
 """
 from apscheduler.triggers.cron import CronTrigger
 
+from app.core.config import settings
 from app.db.database import AsyncSessionLocal
 from app.service.quarter_transition import transition_quarters_to_current_state
 from app.core.logger import logger, log_job_start, log_job_end
@@ -18,6 +19,9 @@ async def quarter_transition_job():
     set previous quarter status to completed. Idempotent and transactional.
     """
     job_name = "Quarter Transition Job"
+    if not settings.QUARTER_TRANSITION_JOB_ENABLED:
+        logger.info("Skipping Quarter Transition Job: QUARTER_TRANSITION_JOB_ENABLED is false")
+        return
     log_job_start(job_name)
 
     try:
@@ -48,6 +52,10 @@ async def quarter_transition_job():
 async def setup_quarter_transition_job():
     """Register the quarter transition cron job with the scheduler."""
     logger.info("Setting up Quarter Transition cron job...")
+
+    if not settings.QUARTER_TRANSITION_JOB_ENABLED:
+        logger.info("Quarter Transition Job disabled: QUARTER_TRANSITION_JOB_ENABLED is false")
+        return
 
     scheduler.add_job(
         quarter_transition_job,

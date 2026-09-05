@@ -30,6 +30,10 @@ async def birthday_reminder_job():
 async def setup_birthday_reminder_job():
     logger.info("Setting up RM Birthday Email cron job...")
 
+    if not settings.BIRTHDAY_EMAIL_JOB_ENABLED:
+        logger.info("RM Birthday Email Job disabled: BIRTHDAY_EMAIL_JOB_ENABLED is false")
+        return
+
     scheduler.add_job(
         birthday_reminder_job,
         trigger=CronTrigger(hour=6, minute=0, timezone="Asia/Kolkata"),
