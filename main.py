@@ -74,7 +74,7 @@ async def root():
             },
             {
                 "name": "RM Birthday Email Job",
-                "schedule": "Daily at 06:00 Asia/Kolkata",
+                "schedule": "Daily at 11:45 Asia/Kolkata",
                 "description": "Emails each RM with today's client/family birthdays via Graph sendMail"
             }
         ]
