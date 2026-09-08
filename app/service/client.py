@@ -15,6 +15,7 @@ async def get_client_ids_without_financial_years(db: AsyncSession):
     try:
         # Simple query: Get all client IDs NOT IN financial_years table
         stmt = select(Client.id).where(
+            Client.is_active.is_not(False),
             Client.id.not_in(
                 select(FinancialYear.client_id)
             )
