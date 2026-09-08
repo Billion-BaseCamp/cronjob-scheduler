@@ -51,6 +51,7 @@ async def get_clients_without_current_fy(db: AsyncSession) -> List[UUID]:
         
         # Find clients without the current financial year
         stmt = select(Client.id).where(
+            Client.is_active.is_not(False),
             Client.id.not_in(
                 select(FinancialYear.client_id).where(
                     FinancialYear.financial_year == current_fy

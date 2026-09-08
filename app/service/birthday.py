@@ -33,6 +33,11 @@ def _client_display_name(client: Client) -> str:
     return f"{client.first_name or ''} {client.last_name or ''}".strip() or "Unnamed Client"
 
 
+def _is_active_client(model=Client):
+    # Soft delete is is_active=False. NULL predates the column and is still active.
+    return model.is_active.is_not(False)
+
+
 def _birthday_match_conditions(reference_date: date):
     return (
         Client.date_of_birth.isnot(None),
@@ -70,6 +75,7 @@ async def get_birthdays_grouped_by_advisor(
         select(Client).where(
             Client.is_family_member.is_(False),
             Client.advisor_id.isnot(None),
+            _is_active_client(),
             *_birthday_match_conditions(today),
         )
     )
@@ -85,6 +91,8 @@ async def get_birthdays_grouped_by_advisor(
         .where(
             Client.is_family_member.is_(True),
             parent_client.advisor_id.isnot(None),
+            _is_active_client(),
+            _is_active_client(parent_client),
             *_birthday_match_conditions(today),
         )
     )
