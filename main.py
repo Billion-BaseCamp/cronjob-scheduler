@@ -64,12 +64,12 @@ async def root():
         "cron_jobs": [
             {
                 "name": "Financial Year Creation Job",
-                "schedule": "On startup + Daily at midnight",
+                "schedule": "On startup + Daily at 12:00 AM Asia/Kolkata",
                 "description": "Creates current financial year with 4 quarters for clients"
             },
             {
                 "name": "Quarter Transition Job",
-                "schedule": "Daily at 00:05",
+                "schedule": "Daily at 12:05 AM Asia/Kolkata",
                 "description": "Unlocks current quarter (active), marks previous quarter as completed"
             },
             {
