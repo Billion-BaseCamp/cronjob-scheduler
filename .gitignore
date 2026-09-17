@@ -92,7 +92,10 @@ tmp/
 temp/
 *.tmp
 
-# Test scripts (optional - remove if you want to commit them)
-test_*.py
-*_test.py
+# Ad-hoc test scripts at the repo root only — the tests/ package IS committed.
+# A blanket `test_*.py` silently excluded every real test file from version
+# control, which is why this repo had no tests tracked.
+/test_*.py
+/*_test.py
 
+cronenv/
