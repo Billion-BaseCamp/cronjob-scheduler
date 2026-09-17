@@ -20,6 +20,13 @@ from app.jobs.quarter_transition_job import setup_quarter_transition_job
 from app.portal.worker.loop import WORKER_ID, run_forever
 from app.portal.worker.status import poller_status
 
+# Uvicorn's dictConfig does not attach a root handler. Portal modules use
+# logging.getLogger(__name__) and were falling through to lastResort (WARNING
+# only, message-only). Same format as portal-automation-worker.
+logging.basicConfig(
+    level=logging.DEBUG if settings.DEBUG else logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logging.getLogger("boto3").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
