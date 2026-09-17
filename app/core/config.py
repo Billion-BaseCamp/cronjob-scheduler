@@ -115,6 +115,12 @@ class Settings:
     WORKER_CONCURRENCY: int = min(8, max(1, _env_int("WORKER_CONCURRENCY", 2)))
     WORKER_HEARTBEAT_SECONDS: float = _env_float("WORKER_HEARTBEAT_SECONDS", "30")
     MAX_ATTEMPTS: int = _env_int("MAX_ATTEMPTS", 3)
+    PORTAL_AUTOMATION_TIMEOUT_MINUTES: int = _env_int(
+        "PORTAL_AUTOMATION_TIMEOUT_MINUTES", 15
+    )
+    PORTAL_AUTOMATION_SWEEP_INTERVAL_SECONDS: int = _env_int(
+        "PORTAL_AUTOMATION_SWEEP_INTERVAL_SECONDS", 60
+    )
     S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")
     S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "ap-south-1"))
 

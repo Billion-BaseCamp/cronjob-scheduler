@@ -19,6 +19,7 @@ from app.jobs.financial_year_job import (
 from app.jobs.quarter_transition_job import setup_quarter_transition_job
 from app.portal.worker.loop import WORKER_ID, run_forever
 from app.portal.worker.status import poller_status
+from app.portal.worker.sweeper import run_forever as run_portal_sweeper
 
 # Uvicorn's dictConfig does not attach a root handler. Portal modules use
 # logging.getLogger(__name__) and were falling through to lastResort (WARNING
@@ -76,6 +77,7 @@ async def _stop_aa_worker(app: FastAPI) -> None:
 
 async def _start_portal_poller(app: FastAPI) -> None:
     app.state.poller_task = None
+    app.state.sweeper_task = None
     if not settings.PORTAL_WORKER_ENABLED:
         logger.info("Portal poller off: PORTAL_WORKER_ENABLED is false")
         return
@@ -85,26 +87,37 @@ async def _start_portal_poller(app: FastAPI) -> None:
             "Fernet key tax-engine uses into this service .env, then restart. "
             "Poller not started so queued jobs stay queued."
         )
-        return
-    if await check_db_connection():
-        logger.info("Database connection verified")
     else:
-        logger.warning("Database is not reachable — portal poller still starting")
-    app.state.poller_task = asyncio.create_task(
-        run_forever(), name="portal-worker"
+        if await check_db_connection():
+            logger.info("Database connection verified")
+        else:
+            logger.warning(
+                "Database is not reachable — portal poller still starting"
+            )
+        app.state.poller_task = asyncio.create_task(
+            run_forever(), name="portal-worker"
+        )
+    app.state.sweeper_task = asyncio.create_task(
+        run_portal_sweeper(), name="portal-automation-sweeper"
     )
 
 
-async def _stop_portal_poller(app: FastAPI) -> None:
-    task = getattr(app.state, "poller_task", None)
+async def _cancel_task(task, label: str) -> None:
     if task is None or task.done():
         return
-    logger.info("Shutting down Playwright poller")
+    logger.info("Shutting down %s", label)
     task.cancel()
     try:
         await task
     except asyncio.CancelledError:
         pass
+
+
+async def _stop_portal_poller(app: FastAPI) -> None:
+    await _cancel_task(getattr(app.state, "poller_task", None), "Playwright poller")
+    await _cancel_task(
+        getattr(app.state, "sweeper_task", None), "portal automation sweeper"
+    )
 
 
 @asynccontextmanager
@@ -220,12 +233,15 @@ async def health_check(request: Request):
         )
 
     db_healthy = await check_db_connection()
-    task = getattr(request.app.state, "poller_task", None)
-    poller = poller_status(task)
+    poller = poller_status(getattr(request.app.state, "poller_task", None))
+    sweeper = poller_status(getattr(request.app.state, "sweeper_task", None))
     portal_expected = settings.PORTAL_WORKER_ENABLED and bool(
         (settings.DOCUMENT_PASSWORD_ENCRYPTION_KEY or "").strip()
     )
-    portal_ok = (not portal_expected) or poller == "running"
+    sweeper_expected = settings.PORTAL_WORKER_ENABLED
+    portal_ok = ((not portal_expected) or poller == "running") and (
+        (not sweeper_expected) or sweeper == "running"
+    )
     status = "healthy" if db_healthy and portal_ok else "degraded"
     return {
         "status": status,
@@ -235,6 +251,7 @@ async def health_check(request: Request):
         "scheduler_running": scheduler.running,
         "scheduled_jobs": jobs_info,
         "poller": poller,
+        "sweeper": sweeper,
         "portal_worker_enabled": settings.PORTAL_WORKER_ENABLED,
         "aa_worker_enabled": settings.AA_WORKER_ENABLED,
         "aa_sweeper_enabled": settings.AA_SWEEPER_ENABLED,

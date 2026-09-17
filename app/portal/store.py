@@ -5,7 +5,7 @@ from uuid import UUID
 
 from nucleus.models import Client
 from nucleus.models.portal_automation import PortalAutomationJob
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -55,3 +55,17 @@ async def get_job(db: AsyncSession, job_id: UUID) -> PortalAutomationJob | None:
 
 async def get_client(db: AsyncSession, client_id: UUID) -> Client | None:
     return await db.get(Client, client_id)
+
+
+async def list_stale_running(
+    db: AsyncSession, cutoff: datetime
+) -> list[PortalAutomationJob]:
+    heartbeat = func.coalesce(
+        PortalAutomationJob.updated_at, PortalAutomationJob.started_at
+    )
+    stmt = select(PortalAutomationJob).where(
+        PortalAutomationJob.status == "running",
+        heartbeat.is_not(None),
+        heartbeat < cutoff,
+    )
+    return list((await db.execute(stmt)).scalars().all())
