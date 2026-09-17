@@ -1,8 +1,11 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+import asyncio
 
 import nucleus.models  # noqa: F401  register Client, FY, Quarter, and related mappers
 
+from app.aa.worker import run_sweeper as run_aa_sweeper, run_worker as run_aa_worker
+from app.core.config import settings
 from app.core.logger import logger
 from app.jobs.birthday_reminder_job import setup_birthday_reminder_job
 from app.jobs.financial_year_job import setup_financial_year_job, start_scheduler, stop_scheduler
@@ -25,6 +28,23 @@ async def lifespan(app: FastAPI):
         start_scheduler()
         
         logger.success("All cron jobs started successfully")
+
+        # Account Aggregator background loops. Both no-op unless their flag is
+        # set, so this is inert until AA is switched on per environment.
+        app.state.aa_tasks = []
+        if settings.AA_WORKER_ENABLED:
+            app.state.aa_tasks.append(
+                asyncio.create_task(run_aa_worker(), name="aa-worker")
+            )
+        if settings.AA_SWEEPER_ENABLED:
+            # Internally guarded by a Postgres advisory lock: safe to start on
+            # every replica, but only one will actually sweep.
+            app.state.aa_tasks.append(
+                asyncio.create_task(run_aa_sweeper(), name="aa-sweeper")
+            )
+        if app.state.aa_tasks:
+            logger.info(f"AA background tasks started: {len(app.state.aa_tasks)}")
+
         logger.info("Application ready!")
         
     except Exception as e:
@@ -43,6 +63,15 @@ async def lifespan(app: FastAPI):
         logger.success("Scheduler stopped successfully")
     except Exception as e:
         logger.exception(f"Error during shutdown: {str(e)}")
+
+    # Cancel the AA loops and wait for them, so an in-flight job finishes its
+    # bookkeeping rather than being orphaned in `running` for the sweeper to
+    # rescue later.
+    for task in getattr(app.state, "aa_tasks", []):
+        task.cancel()
+    if getattr(app.state, "aa_tasks", []):
+        await asyncio.gather(*app.state.aa_tasks, return_exceptions=True)
+        logger.info("AA background tasks stopped")
 
 
 app = FastAPI(
