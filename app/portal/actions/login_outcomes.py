@@ -14,6 +14,7 @@ class LoginOutcome(str, Enum):
     OTP_REQUIRED = "otp_required"
     PORTAL_BLOCKED = "portal_blocked"
     NOT_AUTHENTICATED = "not_authenticated"
+    DUAL_LOGIN = "dual_login"
     UI_DRIFT = "ui_drift"
     UNKNOWN = "unknown"
 
@@ -40,6 +41,10 @@ _BLOCKED = ("permission denied", "access denied")
 _NOT_AUTHENTICATED = (
     "request is not authenticated",
     "ef500023",
+)
+_DUAL_LOGIN = (
+    "dual login detected",
+    "currently active in another window",
 )
 
 
@@ -71,6 +76,8 @@ def classify_login_page(
         return LoginOutcome.PORTAL_BLOCKED
     if _has(text, _NOT_AUTHENTICATED):
         return LoginOutcome.NOT_AUTHENTICATED
+    if _has(text, _DUAL_LOGIN):
+        return LoginOutcome.DUAL_LOGIN
     if is_assured_invalid_password(page_text=page_text, url=url) or (
         on_password_page and ASSURED_INVALID_PASSWORD in text
     ):

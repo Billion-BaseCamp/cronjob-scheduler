@@ -5,15 +5,18 @@ Flow (each Continue hits POST /iec/loginapi/login):
   2. Type user id (PAN) → Continue
   3. Wait for the password screen
   4. Type password, tick the confirm box → Continue
-  5. Confirm the logged-in page is visible
+  5. If Dual Login Detected, click Login Here once (take over the session)
+  6. Confirm the logged-in page is visible
 
 CAPTCHA / OTP are never solved here; those pause the job for a human.
+Dual login is not CAPTCHA/OTP — take over automatically.
 Dry-run skips the browser.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
@@ -41,6 +44,9 @@ CONTINUE_AFTER_PASSWORD_SELECTOR = (
 )
 PASSWORD_MAT_ERROR_SELECTOR = "mat-error"
 LOGGED_IN_SELECTOR = "#postLoginMenuBar, app-dashboard, a#Dashboard"
+# Dual-login modal on #/login/password (live portal HTML).
+LOGIN_HERE_BUTTON_SELECTOR = "button.defaultButton.primaryButton"
+_LOGIN_HERE_RE = re.compile(r"Login\s+Here", re.I)
 
 CAPTCHA_SELECTOR = (
     "img[src*='captcha'], img[alt*='captcha' i], img.captcha, "
@@ -153,6 +159,56 @@ def _classify_pan_error(error: str, page: Page) -> LoginOutcome:
     return outcome
 
 
+def _login_here_button(page: Page):
+    return page.locator(LOGIN_HERE_BUTTON_SELECTOR).filter(has_text=_LOGIN_HERE_RE)
+
+
+async def _confirm_logged_in(page: Page) -> LoginOutcome:
+    """Wait for dashboard, or take over a Dual Login modal first."""
+    logged_in = page.locator(LOGGED_IN_SELECTOR).first
+    login_here = _login_here_button(page)
+    dual_copy = page.get_by_text(
+        re.compile(
+            r"Dual Login Detected|currently active in another window",
+            re.I,
+        )
+    )
+    try:
+        await logged_in.or_(login_here).or_(dual_copy).wait_for(
+            state="visible", timeout=30_000
+        )
+    except PlaywrightTimeout:
+        logger.warning("Logged-in page missing url=%s", page.url)
+        password_outcome = await _classify_password_error(page, None)
+        if password_outcome == LoginOutcome.INVALID_PASSWORD:
+            return password_outcome
+        return classify_login_page(
+            page_text=await page.inner_text("body"),
+            url=page.url or "",
+            still_on_login="login" in (page.url or "").lower(),
+            login_step="password",
+        )
+
+    if await logged_in.is_visible():
+        return LoginOutcome.SUCCESS
+
+    logger.info("Dual login modal — clicking Login Here")
+    try:
+        await login_here.first.click(timeout=5_000)
+    except Exception:
+        logger.warning("Login Here click did not land url=%s", page.url)
+        return LoginOutcome.DUAL_LOGIN
+
+    try:
+        await logged_in.wait_for(state="visible", timeout=30_000)
+    except PlaywrightTimeout:
+        logger.warning(
+            "Logged-in page missing after Login Here url=%s", page.url
+        )
+        return LoginOutcome.DUAL_LOGIN
+    return LoginOutcome.SUCCESS
+
+
 async def _classify_password_error(
     page: Page, login_error: str | None
 ) -> LoginOutcome:
@@ -221,24 +277,10 @@ async def playwright_login(
             return paused
 
         logger.info("Step 3: confirm logged-in page")
-        try:
-            await page.locator(LOGGED_IN_SELECTOR).first.wait_for(
-                state="visible", timeout=30_000
-            )
-        except PlaywrightTimeout:
-            logger.warning("Logged-in page missing url=%s", page.url)
-            password_outcome = await _classify_password_error(page, None)
-            if password_outcome == LoginOutcome.INVALID_PASSWORD:
-                return password_outcome
-            return classify_login_page(
-                page_text=await page.inner_text("body"),
-                url=page.url or "",
-                still_on_login="login" in (page.url or "").lower(),
-                login_step="password",
-            )
-
-        logger.info("Login succeeded url=%s", page.url)
-        return LoginOutcome.SUCCESS
+        outcome = await _confirm_logged_in(page)
+        if outcome == LoginOutcome.SUCCESS:
+            logger.info("Login succeeded url=%s", page.url)
+        return outcome
     except PlaywrightTimeout:
         logger.warning("Login control timed out url=%s", page.url)
         return LoginOutcome.UI_DRIFT

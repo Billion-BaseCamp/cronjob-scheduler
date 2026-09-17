@@ -195,6 +195,17 @@ def _apply_login_outcome(job, client, outcome: LoginOutcome) -> bool:
         )
         return False
 
+    if outcome == LoginOutcome.DUAL_LOGIN:
+        _fail(
+            job,
+            error_code="DUAL_LOGIN",
+            message=(
+                "Portal showed Dual Login Detected. Login Here did not "
+                "complete the takeover."
+            ),
+        )
+        return False
+
     _fail(
         job,
         error_code="UNKNOWN",
