@@ -45,6 +45,8 @@ _NOT_AUTHENTICATED = (
 _DUAL_LOGIN = (
     "dual login detected",
     "currently active in another window",
+    "session already active",
+    "ef00177",
 )
 
 

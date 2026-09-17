@@ -269,8 +269,15 @@ async def playwright_login(
             page, CONTINUE_AFTER_PASSWORD_SELECTOR
         )
         if login_error:
-            logger.warning("Password Continue failed: %s", login_error)
-            return await _classify_password_error(page, login_error)
+            password_outcome = await _classify_password_error(
+                page, login_error
+            )
+            if password_outcome != LoginOutcome.DUAL_LOGIN:
+                logger.warning("Password Continue failed: %s", login_error)
+                return password_outcome
+            logger.info(
+                "Dual session after password Continue: %s", login_error
+            )
 
         paused = await _captcha_or_otp(page)
         if paused is not None:
