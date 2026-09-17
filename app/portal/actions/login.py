@@ -15,11 +15,13 @@ Dry-run skips the browser.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any, Optional
 
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Locator, Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 
 from app.portal.actions.login_outcomes import (
     LoginOutcome,
@@ -159,46 +161,23 @@ def _classify_pan_error(error: str, page: Page) -> LoginOutcome:
     return outcome
 
 
-def _login_here_button(page: Page):
-    return page.locator(LOGIN_HERE_BUTTON_SELECTOR).filter(has_text=_LOGIN_HERE_RE)
+def _login_here_button(page: Page) -> Locator:
+    return page.locator(LOGIN_HERE_BUTTON_SELECTOR).filter(
+        has_text=_LOGIN_HERE_RE
+    ).first
 
 
-async def _confirm_logged_in(page: Page) -> LoginOutcome:
-    """Wait for dashboard, or take over a Dual Login modal first."""
-    logged_in = page.locator(LOGGED_IN_SELECTOR).first
-    login_here = _login_here_button(page)
-    dual_copy = page.get_by_text(
-        re.compile(
-            r"Dual Login Detected|currently active in another window",
-            re.I,
-        )
-    )
-    try:
-        await logged_in.or_(login_here).or_(dual_copy).wait_for(
-            state="visible", timeout=30_000
-        )
-    except PlaywrightTimeout:
-        logger.warning("Logged-in page missing url=%s", page.url)
-        password_outcome = await _classify_password_error(page, None)
-        if password_outcome == LoginOutcome.INVALID_PASSWORD:
-            return password_outcome
-        return classify_login_page(
-            page_text=await page.inner_text("body"),
-            url=page.url or "",
-            still_on_login="login" in (page.url or "").lower(),
-            login_step="password",
-        )
-
-    if await logged_in.is_visible():
-        return LoginOutcome.SUCCESS
-
+async def _click_login_here(page: Page, login_here: Locator) -> Optional[LoginOutcome]:
     logger.info("Dual login modal — clicking Login Here")
     try:
-        await login_here.first.click(timeout=5_000)
+        await login_here.click(timeout=5_000)
     except Exception:
         logger.warning("Login Here click did not land url=%s", page.url)
         return LoginOutcome.DUAL_LOGIN
+    return None
 
+
+async def _wait_logged_in(page: Page, logged_in: Locator) -> LoginOutcome:
     try:
         await logged_in.wait_for(state="visible", timeout=30_000)
     except PlaywrightTimeout:
@@ -207,6 +186,88 @@ async def _confirm_logged_in(page: Page) -> LoginOutcome:
         )
         return LoginOutcome.DUAL_LOGIN
     return LoginOutcome.SUCCESS
+
+
+async def _first_visible(
+    named: list[tuple[str, Locator]], timeout_ms: int
+) -> Optional[str]:
+    """First locator that becomes visible. Each locator must be unique (.first)."""
+
+    async def probe(name: str, loc: Locator) -> str:
+        await loc.wait_for(state="visible", timeout=timeout_ms)
+        return name
+
+    tasks = [asyncio.create_task(probe(n, loc)) for n, loc in named]
+    winner: Optional[str] = None
+    try:
+        done, pending = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        for task in done:
+            if task.cancelled():
+                continue
+            if task.exception() is None:
+                winner = task.result()
+                break
+        for task in pending:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+    except Exception:
+        winner = None
+    return winner
+
+
+async def _timeout_logged_in(page: Page) -> LoginOutcome:
+    logger.warning("Logged-in page missing url=%s", page.url)
+    password_outcome = await _classify_password_error(page, None)
+    if password_outcome == LoginOutcome.INVALID_PASSWORD:
+        return password_outcome
+    return classify_login_page(
+        page_text=await page.inner_text("body"),
+        url=page.url or "",
+        still_on_login="login" in (page.url or "").lower(),
+        login_step="password",
+    )
+
+
+async def _confirm_logged_in(
+    page: Page, *, expect_dual_login: bool = False
+) -> LoginOutcome:
+    """Wait for dashboard, or take over a Dual Login modal first.
+
+    Do not locator.or_() Dual Login copy — the modal matches several nodes
+    and Playwright strict mode crashes (hidden trigger + title + body + button).
+    """
+    logged_in = page.locator(LOGGED_IN_SELECTOR).first
+    login_here = _login_here_button(page)
+
+    if expect_dual_login:
+        try:
+            await login_here.wait_for(state="visible", timeout=15_000)
+        except PlaywrightTimeout:
+            logger.warning("Login Here did not appear url=%s", page.url)
+            return LoginOutcome.DUAL_LOGIN
+        failed = await _click_login_here(page, login_here)
+        if failed is not None:
+            return failed
+        return await _wait_logged_in(page, logged_in)
+
+    which = await _first_visible(
+        [("logged_in", logged_in), ("login_here", login_here)],
+        30_000,
+    )
+    if which == "logged_in":
+        return LoginOutcome.SUCCESS
+    if which == "login_here":
+        failed = await _click_login_here(page, login_here)
+        if failed is not None:
+            return failed
+        return await _wait_logged_in(page, logged_in)
+    return await _timeout_logged_in(page)
 
 
 async def _classify_password_error(
@@ -268,6 +329,7 @@ async def playwright_login(
         login_error = await _click_login_button(
             page, CONTINUE_AFTER_PASSWORD_SELECTOR
         )
+        dual_session = False
         if login_error:
             password_outcome = await _classify_password_error(
                 page, login_error
@@ -275,6 +337,7 @@ async def playwright_login(
             if password_outcome != LoginOutcome.DUAL_LOGIN:
                 logger.warning("Password Continue failed: %s", login_error)
                 return password_outcome
+            dual_session = True
             logger.info(
                 "Dual session after password Continue: %s", login_error
             )
@@ -284,7 +347,9 @@ async def playwright_login(
             return paused
 
         logger.info("Step 3: confirm logged-in page")
-        outcome = await _confirm_logged_in(page)
+        outcome = await _confirm_logged_in(
+            page, expect_dual_login=dual_session
+        )
         if outcome == LoginOutcome.SUCCESS:
             logger.info("Login succeeded url=%s", page.url)
         return outcome
