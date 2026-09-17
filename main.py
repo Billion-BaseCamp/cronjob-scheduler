@@ -4,7 +4,6 @@ import asyncio
 
 import nucleus.models  # noqa: F401  register Client, FY, Quarter, and related mappers
 
-from app.aa.worker import run_sweeper as run_aa_sweeper, run_worker as run_aa_worker
 from app.core.config import settings
 from app.core.logger import logger
 from app.jobs.birthday_reminder_job import setup_birthday_reminder_job
@@ -29,19 +28,35 @@ async def lifespan(app: FastAPI):
         
         logger.success("All cron jobs started successfully")
 
-        # Account Aggregator background loops. Both no-op unless their flag is
-        # set, so this is inert until AA is switched on per environment.
+        # Account Aggregator background loops. Imported lazily and only when
+        # enabled: app.aa imports nucleus.models.account_aggregator, which does
+        # not exist in older pinned nucleus versions. A module-level import
+        # would raise ImportError at startup and take down every cron job in
+        # this service — financial year, quarter transition, birthday emails —
+        # on any deployment whose nucleus pin predates the AA models.
         app.state.aa_tasks = []
-        if settings.AA_WORKER_ENABLED:
-            app.state.aa_tasks.append(
-                asyncio.create_task(run_aa_worker(), name="aa-worker")
-            )
-        if settings.AA_SWEEPER_ENABLED:
-            # Internally guarded by a Postgres advisory lock: safe to start on
-            # every replica, but only one will actually sweep.
-            app.state.aa_tasks.append(
-                asyncio.create_task(run_aa_sweeper(), name="aa-sweeper")
-            )
+        if settings.AA_WORKER_ENABLED or settings.AA_SWEEPER_ENABLED:
+            try:
+                from app.aa.worker import (
+                    run_sweeper as run_aa_sweeper,
+                    run_worker as run_aa_worker,
+                )
+            except ImportError:
+                logger.exception(
+                    "AA worker enabled but its models are unavailable — check the "
+                    "nucleus pin. Other cron jobs are unaffected."
+                )
+            else:
+                if settings.AA_WORKER_ENABLED:
+                    app.state.aa_tasks.append(
+                        asyncio.create_task(run_aa_worker(), name="aa-worker")
+                    )
+                if settings.AA_SWEEPER_ENABLED:
+                    # Internally guarded by a Postgres advisory lock: safe to
+                    # start on every replica, but only one will actually sweep.
+                    app.state.aa_tasks.append(
+                        asyncio.create_task(run_aa_sweeper(), name="aa-sweeper")
+                    )
         if app.state.aa_tasks:
             logger.info(f"AA background tasks started: {len(app.state.aa_tasks)}")
 
