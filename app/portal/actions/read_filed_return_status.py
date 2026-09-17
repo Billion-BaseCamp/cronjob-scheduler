@@ -47,7 +47,9 @@ VIEW_DETAILS_SELECTOR = "span.hyperLink"
 LIFECYCLE_SELECTOR = "app-itr-status-life-cycle"
 CARD_SELECTOR = "mat-card.contextBox"
 STEP_SELECTOR = "div.matStepStatus"
-FILING_DATE_LABEL = "Filing Date :"
+# Live portal: " Filing Date : " inside div.valueBox. Match on the box
+# text — do not filter(has=card-scoped locator); that misses the date.
+_FILING_DATE_BOX_RE = re.compile(r"Filing Date\s*:")
 
 _PAGE_TIMEOUT_MS = 20_000
 _CARD_TIMEOUT_MS = 15_000
@@ -137,13 +139,10 @@ async def _step_labels(root: Locator) -> tuple[str, ...]:
 
 
 async def _filing_date_of(card: Locator) -> Optional[datetime]:
-    label = card.locator("mat-label.rightsideLabel").filter(
-        has_text=FILING_DATE_LABEL
-    )
-    box = card.locator("div.valueBox").filter(has=label)
+    box = card.locator("div.valueBox").filter(has_text=_FILING_DATE_BOX_RE)
     if await box.count() == 0:
         return None
-    text = (await box.locator("mat-label.fieldVal").inner_text()).strip()
+    text = (await box.first.locator("mat-label.fieldVal").inner_text()).strip()
     return parse_filing_date(text)
 
 
