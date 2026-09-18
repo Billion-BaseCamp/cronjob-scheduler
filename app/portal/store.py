@@ -33,7 +33,10 @@ async def claim_next_queued(
     row.worker_id = worker_id
     row.attempt = (row.attempt or 0) + 1
     row.waiting_since = None
-    await db.flush()
+    # Commit before Playwright so heartbeat/sweeper can see ``running`` and
+    # the FOR UPDATE lock is not held across the browser session.
+    await db.commit()
+    await db.refresh(row)
     return row
 
 

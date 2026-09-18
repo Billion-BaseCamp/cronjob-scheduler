@@ -1,6 +1,7 @@
 """CHECK_ITR_VERIFICATION: login, read filed-return status, log out.
 
-Does not write itr_returns.filing_status.
+Promotes ``filed`` → ``e_verified`` when the portal scrape says so.
+Never demotes filing status.
 
 Primary screenshot (one S3 object per job):
   fail/pause → the page where it broke
@@ -26,6 +27,7 @@ from app.portal.evidence_step import (
     EVIDENCE_LOGIN,
     primary_evidence_step,
 )
+from app.portal.filing_status import maybe_promote_e_verified
 from app.portal.store import get_client
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,7 @@ async def _maybe_screenshot(page: Any, job_id, step_name: str) -> str | None:
         logger.exception("Screenshot failed for %s", step_name)
         return None
     try:
-        return upload_screenshot(job_id, step_name, png)
+        return await upload_screenshot(job_id, step_name, png)
     except Exception:
         logger.exception("Evidence upload failed for %s", step_name)
         return None
@@ -119,6 +121,18 @@ def _apply_login_outcome(job, client, outcome: LoginOutcome) -> bool:
             status="waiting_for_password",
             error_code="MISSING_PASSWORD",
             message="No Income Tax portal password saved. Enter it to continue.",
+        )
+        return False
+
+    if outcome == LoginOutcome.CRYPTO_ERROR:
+        _fail(
+            job,
+            error_code="CRYPTO_ERROR",
+            message=(
+                "Could not decrypt the saved portal password. "
+                "DOCUMENT_PASSWORD_ENCRYPTION_KEY must match tax-engine. "
+                "The saved password was not changed."
+            ),
         )
         return False
 
@@ -285,6 +299,7 @@ async def run_check_itr_verification(db, job) -> None:
                     **status,
                 },
             )
+            await maybe_promote_e_verified(db, job)
         except Exception:
             logger.exception("CHECK_ITR_VERIFICATION crashed for job %s", job.id)
             step = job.current_step or EVIDENCE_LOGIN

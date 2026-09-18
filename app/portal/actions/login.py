@@ -29,7 +29,7 @@ from app.portal.actions.login_outcomes import (
     is_assured_invalid_password,
 )
 from app.core.config import settings
-from app.portal.crypto import decrypt_portal_secret
+from app.portal.crypto import PortalSecretDecryptError, decrypt_portal_secret
 from app.portal.network import is_login_api, login_api_error
 
 logger = logging.getLogger(__name__)
@@ -86,9 +86,12 @@ def dry_run_login(password: Optional[str]) -> LoginOutcome:
 
 
 def resolve_login_outcome_without_browser(client: Any) -> LoginOutcome:
-    password = decrypt_portal_secret(
-        getattr(client, "it_portal_pass", None)
-    )
+    try:
+        password = decrypt_portal_secret(
+            getattr(client, "it_portal_pass", None)
+        )
+    except PortalSecretDecryptError:
+        return LoginOutcome.CRYPTO_ERROR
     if settings.PORTAL_AUTOMATION_DRY_RUN:
         return dry_run_login(password)
     if not password or not str(password).strip():
@@ -360,14 +363,17 @@ async def playwright_login(
 
 async def run_login(client: Any, page: Optional[Page] = None) -> LoginOutcome:
     """Decrypt credentials, then log in (or dry-run)."""
-    password = decrypt_portal_secret(
-        getattr(client, "it_portal_pass", None)
-    )
-    if settings.PORTAL_AUTOMATION_DRY_RUN:
-        return dry_run_login(password)
-    if not password or not str(password).strip():
-        return LoginOutcome.MISSING_PASSWORD
-    user_id = portal_user_id(client)
+    try:
+        password = decrypt_portal_secret(
+            getattr(client, "it_portal_pass", None)
+        )
+        if settings.PORTAL_AUTOMATION_DRY_RUN:
+            return dry_run_login(password)
+        if not password or not str(password).strip():
+            return LoginOutcome.MISSING_PASSWORD
+        user_id = portal_user_id(client)
+    except PortalSecretDecryptError:
+        return LoginOutcome.CRYPTO_ERROR
     if not user_id:
         return LoginOutcome.UNKNOWN
     if page is None:

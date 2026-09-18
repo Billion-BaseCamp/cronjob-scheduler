@@ -15,6 +15,7 @@ class LoginOutcome(str, Enum):
     PORTAL_BLOCKED = "portal_blocked"
     NOT_AUTHENTICATED = "not_authenticated"
     DUAL_LOGIN = "dual_login"
+    CRYPTO_ERROR = "crypto_error"
     UI_DRIFT = "ui_drift"
     UNKNOWN = "unknown"
 
