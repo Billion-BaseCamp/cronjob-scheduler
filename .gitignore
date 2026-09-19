@@ -6,6 +6,7 @@ __pycache__/
 .Python
 
 # Virtual Environment
+.venv/
 myenv/
 venv/
 env/
@@ -17,6 +18,7 @@ venv.bak/
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # Logs
 logs/
@@ -86,6 +88,12 @@ wheels/
 *.swp
 *.swo
 *~
+
+# Playwright
+.playwright-cli/
+test-results/
+playwright-report/
+screenshots/
 
 # Temporary files
 tmp/

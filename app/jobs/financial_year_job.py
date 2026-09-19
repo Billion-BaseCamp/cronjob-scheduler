@@ -57,9 +57,12 @@ async def setup_financial_year_job():
         logger.info("Financial Year Creation Job disabled: FINANCIAL_YEAR_JOB_ENABLED is false")
         return
 
-    logger.info("Running initial Financial Year creation job...")
-    await financial_year_creation_job()
-    
+    if settings.FINANCIAL_YEAR_RUN_ON_STARTUP:
+        logger.info("Running initial Financial Year creation job...")
+        await financial_year_creation_job()
+    else:
+        logger.info("Skipping FY on startup (FINANCIAL_YEAR_RUN_ON_STARTUP is false)")
+
     scheduler.add_job(
         financial_year_creation_job,
         trigger=CronTrigger(hour=0, minute=0, timezone="Asia/Kolkata"),

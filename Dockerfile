@@ -2,20 +2,24 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
-# install git (required for pip git+ssh installs)
-# Install dependencies first, then trust GitHub SSH host
+# git+ssh for nucleus; wget/gnupg for Chrome
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git openssh-client && \
+    apt-get install -y --no-install-recommends git openssh-client wget gnupg ca-certificates && \
     mkdir -p /root/.ssh && \
     ssh-keyscan github.com >> /root/.ssh/known_hosts && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 COPY requirements.txt .
-RUN --mount=type=ssh pip install --no-cache-dir -r requirements.txt && \
-    apt-get purge -y git && \
+RUN --mount=type=ssh pip install --no-cache-dir -r requirements.txt
+
+# channel="chrome" — portal blocks Playwright's bundled Chromium
+RUN playwright install --with-deps chrome
+
+RUN apt-get purge -y git && \
     apt-get autoremove -y && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /root/.cache /root/.ssh
@@ -25,4 +29,5 @@ COPY main.py .
 
 EXPOSE 8002
 
-CMD ["python", "-m", "gunicorn", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--workers", "1", "--bind", "0.0.0.0:8002", "--timeout", "60"]
+# One process. Never --reload. Do not use gunicorn --timeout 60 (Chrome jobs run longer).
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "1"]

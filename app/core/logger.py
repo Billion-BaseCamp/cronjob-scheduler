@@ -63,6 +63,8 @@ class CustomLogger:
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
         self.logger.addHandler(error_file_handler)
+        # Root also has a console handler (portal poller). Do not print twice.
+        self.logger.propagate = False
     
     def debug(self, message: str):
         """Log debug message"""
