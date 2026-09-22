@@ -9,6 +9,7 @@ from app.portal.actions.read_e_proceedings_notices import (
     epoch_ms_to_date,
     map_api_notice,
     notices_from_api_payload,
+    parse_labeled_field_from_text,
     parse_ui_date,
     pick_latest_notice,
 )
@@ -19,6 +20,23 @@ def test_parse_ui_date() -> None:
     assert parse_ui_date("16-Sep-2026") == date(2026, 9, 16)
     assert parse_ui_date("Issued On 11-Aug-2026") == date(2026, 8, 11)
     assert parse_ui_date("") is None
+
+
+def test_parse_description_from_card_text() -> None:
+    card_text = (
+        "Description :  [ITBA]Notice u/s 142(1)of Income Tax Act 1961. "
+        "Issued On :   16-Sep-2026 "
+        "Response Due Date :  23-Sep-2026 "
+        "Last Response submitted On : - "
+    )
+    assert (
+        parse_labeled_field_from_text(card_text, "Description")
+        == "[ITBA]Notice u/s 142(1)of Income Tax Act 1961."
+    )
+    assert parse_labeled_field_from_text(card_text, "Issued On") == "16-Sep-2026"
+    assert (
+        parse_labeled_field_from_text(card_text, "Response Due Date") == "23-Sep-2026"
+    )
 
 
 def test_epoch_ms_to_date() -> None:

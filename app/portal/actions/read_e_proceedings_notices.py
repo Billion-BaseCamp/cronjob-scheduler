@@ -199,6 +199,53 @@ async def _inner_text(locator: Locator) -> str:
         return ""
 
 
+def parse_labeled_field_from_text(card_text: str, label: str) -> Optional[str]:
+    """Pull value after ``Label :`` from flat card text (unit-testable fallback)."""
+    next_labels = (
+        r"Description|Issued On|Response Due Date|"
+        r"Last Response(?:\s+submitted\s+On)?"
+    )
+    pattern = re.compile(
+        rf"{re.escape(label)}\s*:\s*(.+?)(?=(?:{next_labels})\s*:|\Z)",
+        re.I | re.S,
+    )
+    match = pattern.search(card_text or "")
+    if match is None:
+        return None
+    value = re.sub(r"\s+", " ", match.group(1)).strip(" -\t\n\r")
+    return value or None
+
+
+async def _labeled_subtitle(card: Locator, label: str) -> Optional[str]:
+    """Read ``span.dataHeading`` + sibling ``span.subtitle2`` (portal notice cards)."""
+    heading = card.locator("span.dataHeading, .dataHeading").filter(
+        has_text=re.compile(rf"{re.escape(label)}\s*:", re.I)
+    )
+    if await heading.count() == 0:
+        heading = card.locator("*").filter(
+            has_text=re.compile(rf"^\s*{re.escape(label)}\s*:\s*$", re.I)
+        )
+    if await heading.count() == 0:
+        return None
+    parent = heading.first.locator("xpath=..")
+    value_node = parent.locator(
+        "span.subtitle2, .subtitle2, mat-label.subtitle2, .fieldVal"
+    ).first
+    if await value_node.count():
+        value = await _inner_text(value_node)
+        if value:
+            return value
+    # Sibling after the heading
+    sibling = heading.first.locator(
+        "xpath=following-sibling::span[contains(@class,'subtitle2')][1]"
+    )
+    if await sibling.count():
+        value = await _inner_text(sibling.first)
+        if value:
+            return value
+    return None
+
+
 async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
     text = await _inner_text(card)
     if not text:
@@ -225,27 +272,18 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
         elif raw_section:
             provision = raw_section.strip()
 
+    description = await _labeled_subtitle(card, "Description")
+    if not description:
+        description = parse_labeled_field_from_text(text, "Description")
+
     issued = None
     due = None
-    # Prefer labeled siblings
-    for label_text, target in (
-        ("Issued On", "issued"),
-        ("Response Due Date", "due"),
-    ):
-        label = card.locator("*").filter(has_text=re.compile(rf"^\s*{label_text}\s*$", re.I))
-        if await label.count() == 0:
-            continue
-        # sibling / nearby subtitle
-        parent = label.first.locator("xpath=..")
-        value_node = parent.locator(".subtitle2, mat-label.subtitle2, .fieldVal").first
-        value = await _inner_text(value_node) if await value_node.count() else ""
-        if not value:
-            value = await _inner_text(parent)
-        parsed = parse_ui_date(value) or parse_ui_date(text)
-        if target == "issued" and parsed:
-            issued = parsed
-        if target == "due" and parsed:
-            due = parsed
+    issued_raw = await _labeled_subtitle(card, "Issued On")
+    due_raw = await _labeled_subtitle(card, "Response Due Date")
+    if issued_raw:
+        issued = parse_ui_date(issued_raw)
+    if due_raw:
+        due = parse_ui_date(due_raw)
 
     if issued is None:
         # Fallback: first date in card = issued, second = due
@@ -253,7 +291,7 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
         dates = [d for d in dates if d is not None]
         if dates:
             issued = dates[0]
-        if len(dates) > 1:
+        if due is None and len(dates) > 1:
             due = dates[1]
 
     has_submit = False
@@ -275,7 +313,7 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
         "din": din,
         "filing_provision": provision,
         "document_reference_id": None,
-        "description": None,
+        "description": description,
         "issued_on": _date_iso(issued),
         "response_due_date": _date_iso(due),
         "assessment_year": None,
