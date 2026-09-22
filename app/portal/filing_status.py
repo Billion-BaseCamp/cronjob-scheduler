@@ -1,6 +1,7 @@
 """Promote itr_returns.filing_status from a completed portal check.
 
-Only ``filed`` → ``e_verified``. Never demotes.
+Only ``CHECK_ITR_VERIFICATION`` may promote. Only ``filed`` → ``e_verified``.
+Never demotes.
 """
 
 from __future__ import annotations
@@ -14,9 +15,12 @@ logger = logging.getLogger(__name__)
 
 FILING_STATUS_FILED = "filed"
 FILING_STATUS_E_VERIFIED = "e_verified"
+_PROMOTE_WORKFLOW = "CHECK_ITR_VERIFICATION"
 
 
 async def maybe_promote_e_verified(db, job) -> bool:
+    if getattr(job, "workflow", None) != _PROMOTE_WORKFLOW:
+        return False
     if getattr(job, "status", None) != "completed":
         return False
     result = job.result if isinstance(job.result, dict) else {}
