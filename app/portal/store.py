@@ -5,7 +5,7 @@ from uuid import UUID
 
 from nucleus.models import Client
 from nucleus.models.portal_automation import PortalAutomationJob
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -16,9 +16,23 @@ def _now() -> datetime:
 async def claim_next_queued(
     db: AsyncSession, worker_id: str
 ) -> PortalAutomationJob | None:
+    """Claim the oldest queued job that is safe to open a portal session for.
+
+    Skips clients that already have a ``running`` job so two Chromes never share
+    a PAN (Dual Login). Uses a transaction advisory lock per client so two
+    slots cannot claim two queued jobs for the same client in parallel.
+    """
+    running_clients = (
+        select(PortalAutomationJob.client_id)
+        .where(PortalAutomationJob.status == "running")
+        .distinct()
+    )
     stmt = (
         select(PortalAutomationJob)
-        .where(PortalAutomationJob.status == "queued")
+        .where(
+            PortalAutomationJob.status == "queued",
+            PortalAutomationJob.client_id.notin_(running_clients),
+        )
         .order_by(PortalAutomationJob.created_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
@@ -26,6 +40,25 @@ async def claim_next_queued(
     row = (await db.execute(stmt)).scalars().first()
     if row is None:
         return None
+
+    # Serialize claims for this client across worker slots / processes.
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:cid))"),
+        {"cid": str(row.client_id)},
+    )
+    still_busy = await db.scalar(
+        select(
+            exists().where(
+                PortalAutomationJob.client_id == row.client_id,
+                PortalAutomationJob.status == "running",
+                PortalAutomationJob.id != row.id,
+            )
+        )
+    )
+    if still_busy:
+        await db.rollback()
+        return None
+
     now = _now()
     row.status = "running"
     row.started_at = now
