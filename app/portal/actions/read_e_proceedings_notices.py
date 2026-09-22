@@ -1,0 +1,487 @@
+"""Harvest e-Proceedings → For your Action notices (UI first, API fallback).
+
+Per proceeding: open View Notices/Orders, keep **latest by issuedOn only**,
+classify Submit Response vs View Response.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Optional
+
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Locator
+from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+from app.core.config import settings
+from app.portal.actions.pending_actions_hub import (
+    back_to_e_proceedings_list,
+    open_e_proceedings_for_your_action,
+)
+from app.portal.notice_diagnosis import attach_summaries
+
+logger = logging.getLogger(__name__)
+
+SOURCE = "e_proceedings"
+
+PROCEEDING_CARD_SELECTOR = (
+    ".card-container.matCardRow, .matCardRow, div.card-container.matCardRow"
+)
+VIEW_NOTICES_BUTTON = re.compile(r"View Notices\s*/\s*Orders", re.I)
+NOTICE_CARD_SELECTOR = ".card-container.matCard, div.card-container.matCard"
+SUBMIT_RESPONSE_RE = re.compile(r"Submit Response", re.I)
+VIEW_RESPONSE_RE = re.compile(r"View Response", re.I)
+DIN_RE = re.compile(r"(?:Reference ID|DIN)\s*[:\-]?\s*(\d{8,})", re.I)
+SECTION_RE = re.compile(r"^\s*(\d{1,3}[A-Z]?(?:\(\d+\))?)\s*$", re.I)
+_MONTHS = {
+    "Jan": 1,
+    "Feb": 2,
+    "Mar": 3,
+    "Apr": 4,
+    "May": 5,
+    "Jun": 6,
+    "Jul": 7,
+    "Aug": 8,
+    "Sep": 9,
+    "Oct": 10,
+    "Nov": 11,
+    "Dec": 12,
+}
+_UI_DATE_RE = re.compile(
+    r"(\d{1,2})[-/\s](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[-/\s,]?(\d{4})",
+    re.I,
+)
+
+_PAGE_TIMEOUT_MS = 20_000
+_CARD_TIMEOUT_MS = 12_000
+
+
+@dataclass
+class NoticeHarvest:
+    source: str
+    ok: bool
+    notices: list[dict[str, Any]] = field(default_factory=list)
+    error: str | None = None
+    scrape_path: str | None = None
+
+
+def parse_ui_date(text: str) -> Optional[date]:
+    match = _UI_DATE_RE.search(text or "")
+    if match is None:
+        return None
+    day = int(match.group(1))
+    month = _MONTHS[match.group(2).title()[:3]]
+    year = int(match.group(3))
+    return date(year, month, day)
+
+
+def epoch_ms_to_date(value: Any) -> Optional[date]:
+    if value is None or value == "":
+        return None
+    try:
+        ms = int(value)
+    except (TypeError, ValueError):
+        return parse_ui_date(str(value))
+    if ms < 10_000_000_000:  # seconds
+        ms *= 1000
+    # Portal "Issued On" is Indian civil date.
+    ist = timezone(timedelta(hours=5, minutes=30))
+    return datetime.fromtimestamp(ms / 1000.0, tz=ist).date()
+
+
+def ay_display(ay: Any) -> Optional[str]:
+    """Portal ``ay`` year start (e.g. 2025) → ``2025-26``."""
+    if ay is None or ay == "":
+        return None
+    text = str(ay).strip()
+    if re.match(r"^\d{4}-\d{2}$", text):
+        return text
+    try:
+        start = int(text)
+    except ValueError:
+        return text or None
+    return f"{start}-{(start + 1) % 100:02d}"
+
+
+def notice_sort_key(notice: dict[str, Any]) -> tuple:
+    issued = notice.get("issued_on")
+    if isinstance(issued, date):
+        return (issued.toordinal(), notice.get("din") or "")
+    parsed = parse_ui_date(str(issued or "")) or epoch_ms_to_date(issued)
+    return (parsed.toordinal() if parsed else 0, notice.get("din") or "")
+
+
+def pick_latest_notice(notices: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """One notice per proceeding — highest issued_on."""
+    if not notices:
+        return None
+    return max(notices, key=notice_sort_key)
+
+
+def map_api_notice(raw: dict[str, Any], *, proceeding: dict[str, Any] | None = None) -> dict[str, Any]:
+    proceeding = proceeding or {}
+    issued = epoch_ms_to_date(raw.get("issuedOn"))
+    due = epoch_ms_to_date(raw.get("responseDueDate"))
+    is_submitted = str(raw.get("isSubmitted") or "").strip().upper()
+    has_submit = is_submitted == "N"
+    ay = ay_display(raw.get("ay") or proceeding.get("assessmentYear"))
+    return {
+        "source": SOURCE,
+        "din": str(raw.get("documentIdentificationNumber") or "").strip() or None,
+        "filing_provision": (raw.get("noticeSection") or "").strip() or None,
+        "document_reference_id": (raw.get("documentReferenceId") or "").strip() or None,
+        "description": (raw.get("description") or "").strip() or None,
+        "issued_on": issued.isoformat() if issued else None,
+        "response_due_date": due.isoformat() if due else None,
+        "assessment_year": ay,
+        "proceeding_name": (
+            (raw.get("proceedingName") or proceeding.get("proceedingName") or "")
+            .strip()
+            or None
+        ),
+        "proceeding_req_id": str(
+            raw.get("proceedingReqId") or proceeding.get("proceedingReqId") or ""
+        ).strip()
+        or None,
+        "response_state": "submit_response" if has_submit else "view_response",
+        "has_submit_response": has_submit,
+        "scrape_path": "api",
+    }
+
+
+def notices_from_api_payload(payload: Any) -> list[dict[str, Any]]:
+    """Extract notice dicts from a portal XHR JSON body."""
+    if not isinstance(payload, dict):
+        return []
+    candidates: list[Any] = []
+    for key in (
+        "eProceedingNotices",
+        "notices",
+        "noticeList",
+        "items",
+        "data",
+        "responseData",
+    ):
+        value = payload.get(key)
+        if isinstance(value, list):
+            candidates = value
+            break
+    if not candidates:
+        # Flat list-shaped wrapper sometimes nests under messages-less root.
+        for value in payload.values():
+            if (
+                isinstance(value, list)
+                and value
+                and isinstance(value[0], dict)
+                and "documentIdentificationNumber" in value[0]
+            ):
+                candidates = value
+                break
+    out: list[dict[str, Any]] = []
+    for item in candidates:
+        if isinstance(item, dict) and item.get("documentIdentificationNumber"):
+            out.append(map_api_notice(item))
+    return out
+
+
+def _date_iso(d: Optional[date]) -> Optional[str]:
+    return d.isoformat() if d else None
+
+
+async def _inner_text(locator: Locator) -> str:
+    try:
+        return (await locator.inner_text()).strip()
+    except PlaywrightError:
+        return ""
+
+
+async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
+    text = await _inner_text(card)
+    if not text:
+        return None
+
+    din = None
+    din_match = DIN_RE.search(text)
+    if din_match:
+        din = din_match.group(1)
+    else:
+        heading = card.locator(".heading5, mat-label.heading5").first
+        if await heading.count():
+            h = await _inner_text(heading)
+            digits = re.search(r"\d{8,}", h)
+            if digits:
+                din = digits.group(0)
+
+    provision = None
+    section = card.locator(".heading6, mat-label.heading6").first
+    if await section.count():
+        raw_section = await _inner_text(section)
+        if SECTION_RE.match(raw_section):
+            provision = raw_section.strip()
+        elif raw_section:
+            provision = raw_section.strip()
+
+    issued = None
+    due = None
+    # Prefer labeled siblings
+    for label_text, target in (
+        ("Issued On", "issued"),
+        ("Response Due Date", "due"),
+    ):
+        label = card.locator("*").filter(has_text=re.compile(rf"^\s*{label_text}\s*$", re.I))
+        if await label.count() == 0:
+            continue
+        # sibling / nearby subtitle
+        parent = label.first.locator("xpath=..")
+        value_node = parent.locator(".subtitle2, mat-label.subtitle2, .fieldVal").first
+        value = await _inner_text(value_node) if await value_node.count() else ""
+        if not value:
+            value = await _inner_text(parent)
+        parsed = parse_ui_date(value) or parse_ui_date(text)
+        if target == "issued" and parsed:
+            issued = parsed
+        if target == "due" and parsed:
+            due = parsed
+
+    if issued is None:
+        # Fallback: first date in card = issued, second = due
+        dates = [parse_ui_date(m.group(0)) for m in _UI_DATE_RE.finditer(text)]
+        dates = [d for d in dates if d is not None]
+        if dates:
+            issued = dates[0]
+        if len(dates) > 1:
+            due = dates[1]
+
+    has_submit = False
+    response_state = "view_response"
+    submit_btn = card.locator("button").filter(has_text=SUBMIT_RESPONSE_RE)
+    view_btn = card.locator("button").filter(has_text=VIEW_RESPONSE_RE)
+    if await submit_btn.count() and await submit_btn.first.is_visible():
+        has_submit = True
+        response_state = "submit_response"
+    elif await view_btn.count():
+        has_submit = False
+        response_state = "view_response"
+
+    if not din and not provision:
+        return None
+
+    return {
+        "source": SOURCE,
+        "din": din,
+        "filing_provision": provision,
+        "document_reference_id": None,
+        "description": None,
+        "issued_on": _date_iso(issued),
+        "response_due_date": _date_iso(due),
+        "assessment_year": None,
+        "proceeding_name": None,
+        "proceeding_req_id": None,
+        "response_state": response_state,
+        "has_submit_response": has_submit,
+        "scrape_path": "ui",
+    }
+
+
+async def _proceeding_meta(card: Locator) -> dict[str, Any]:
+    text = await _inner_text(card)
+    name = None
+    heading = card.locator(".heading5, .heading6, mat-label.contentHeadingText").first
+    if await heading.count():
+        name = await _inner_text(heading)
+    ay = None
+    ay_match = re.search(r"A\.?Y\.?\s*(\d{4})\s*[-–]\s*(\d{2,4})", text, re.I)
+    if ay_match:
+        start = int(ay_match.group(1))
+        ay = f"{start}-{(start + 1) % 100:02d}"
+    elif re.search(r"\b(20\d{2})\b", text):
+        # assessmentYear sometimes shown as 2025 only
+        year = int(re.search(r"\b(20\d{2})\b", text).group(1))
+        ay = ay_display(year)
+    return {"proceeding_name": name, "assessment_year": ay, "raw_text": text}
+
+
+def _is_notice_api_response(response) -> bool:
+    try:
+        if response.request.method not in ("GET", "POST"):
+            return False
+        if response.request.resource_type not in ("xhr", "fetch"):
+            return False
+        url = response.url or ""
+        if "incometax.gov.in" not in url:
+            return False
+        if "loginapi" in url:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+async def _try_parse_notice_response(response) -> list[dict[str, Any]]:
+    try:
+        data = await response.json()
+    except Exception:
+        return []
+    return notices_from_api_payload(data)
+
+
+async def _scrape_notices_ui(page: Page) -> list[dict[str, Any]]:
+    cards = page.locator(NOTICE_CARD_SELECTOR)
+    try:
+        await cards.first.wait_for(state="visible", timeout=_CARD_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        # Empty list is valid
+        count = await cards.count()
+        if count == 0:
+            return []
+    count = await cards.count()
+    notices: list[dict[str, Any]] = []
+    for index in range(count):
+        parsed = await _parse_notice_card(cards.nth(index))
+        if parsed:
+            notices.append(parsed)
+    return notices
+
+
+async def _open_view_notices(card: Locator, page: Page) -> tuple[bool, list[dict[str, Any]]]:
+    """Click View Notices; return (opened, api_notices_if_any)."""
+    button = card.locator("button.defaultButton.primaryButton, button").filter(
+        has_text=VIEW_NOTICES_BUTTON
+    )
+    if await button.count() == 0:
+        return False, []
+
+    api_notices: list[dict[str, Any]] = []
+
+    async def _on_response(response) -> None:
+        if not _is_notice_api_response(response):
+            return
+        rows = await _try_parse_notice_response(response)
+        if rows:
+            api_notices.extend(rows)
+
+    page.on("response", _on_response)
+    try:
+        await button.first.click(timeout=_PAGE_TIMEOUT_MS)
+        # Wait for notice cards or URL change
+        try:
+            await page.wait_for_url(
+                re.compile(r"viewNotices", re.I),
+                timeout=_PAGE_TIMEOUT_MS,
+            )
+        except PlaywrightTimeoutError:
+            pass
+        await page.wait_for_timeout(800)
+        return True, api_notices
+    except (PlaywrightTimeoutError, PlaywrightError):
+        logger.warning("View Notices/Orders click failed", exc_info=True)
+        return False, api_notices
+    finally:
+        try:
+            page.remove_listener("response", _on_response)
+        except Exception:
+            pass
+
+
+async def _harvest_proceeding(
+    card: Locator, page: Page
+) -> Optional[dict[str, Any]]:
+    meta = await _proceeding_meta(card)
+    opened, api_notices = await _open_view_notices(card, page)
+    if not opened:
+        return None
+
+    ui_notices = await _scrape_notices_ui(page)
+    scrape_path = "ui"
+    notices = ui_notices
+    if not notices and api_notices:
+        notices = api_notices
+        scrape_path = "api"
+        logger.info(
+            "UI notice parse empty; using API fallback (%s notices)",
+            len(api_notices),
+        )
+    elif not notices:
+        logger.info("No notices for proceeding %s", meta.get("proceeding_name"))
+
+    latest = pick_latest_notice(notices)
+    await back_to_e_proceedings_list(page)
+
+    if latest is None:
+        return None
+
+    if not latest.get("proceeding_name"):
+        latest["proceeding_name"] = meta.get("proceeding_name")
+    if not latest.get("assessment_year"):
+        latest["assessment_year"] = meta.get("assessment_year")
+    latest["scrape_path"] = scrape_path if latest.get("scrape_path") == "ui" else latest.get(
+        "scrape_path", scrape_path
+    )
+    return latest
+
+
+async def read_e_proceedings_notices(page: Page | None) -> NoticeHarvest:
+    if settings.PORTAL_AUTOMATION_DRY_RUN:
+        return NoticeHarvest(
+            source=SOURCE,
+            ok=True,
+            notices=[],
+            scrape_path="dry-run",
+        )
+    if page is None:
+        return NoticeHarvest(
+            source=SOURCE,
+            ok=False,
+            notices=[],
+            error="no page",
+        )
+
+    opened = await open_e_proceedings_for_your_action(page)
+    if not opened:
+        return NoticeHarvest(
+            source=SOURCE,
+            ok=False,
+            notices=[],
+            error="Could not open e-Proceedings → For your Action",
+        )
+
+    cards = page.locator(PROCEEDING_CARD_SELECTOR)
+    try:
+        await cards.first.wait_for(state="visible", timeout=_CARD_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        count = await cards.count()
+        if count == 0:
+            logger.info("No e-proceeding cards on For your Action")
+            return NoticeHarvest(source=SOURCE, ok=True, notices=[], scrape_path="ui")
+
+    count = await cards.count()
+    logger.info("Found %s e-proceeding card(s)", count)
+    harvested: list[dict[str, Any]] = []
+    # Re-query each iteration — DOM rebuilds after Back.
+    for index in range(count):
+        cards = page.locator(PROCEEDING_CARD_SELECTOR)
+        try:
+            await cards.nth(index).wait_for(state="visible", timeout=_CARD_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            logger.warning("Proceeding card %s missing after refresh", index)
+            continue
+        try:
+            notice = await _harvest_proceeding(cards.nth(index), page)
+        except Exception:
+            logger.exception("Failed harvesting proceeding card %s", index)
+            await back_to_e_proceedings_list(page)
+            continue
+        if notice:
+            harvested.append(notice)
+
+    enriched = attach_summaries(harvested)
+    return NoticeHarvest(
+        source=SOURCE,
+        ok=True,
+        notices=enriched,
+        scrape_path="ui",
+    )
