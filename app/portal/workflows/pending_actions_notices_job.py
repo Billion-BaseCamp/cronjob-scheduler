@@ -228,7 +228,6 @@ def _harvest_as_source_result(harvest: NoticeHarvest) -> dict[str, Any]:
         "ok": harvest.ok,
         "notices": harvest.notices,
         "error": harvest.error,
-        "scrape_path": harvest.scrape_path,
     }
 
 

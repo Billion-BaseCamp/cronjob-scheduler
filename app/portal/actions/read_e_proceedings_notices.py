@@ -37,6 +37,10 @@ SUBMIT_RESPONSE_RE = re.compile(r"Submit Response", re.I)
 VIEW_RESPONSE_RE = re.compile(r"View Response", re.I)
 DIN_RE = re.compile(r"(?:Reference ID|DIN)\s*[:\-]?\s*(\d{8,})", re.I)
 SECTION_RE = re.compile(r"^\s*(\d{1,3}[A-Z]?(?:\(\d+\))?)\s*$", re.I)
+DOC_REF_RE = re.compile(
+    r"(ITBA/[A-Za-z0-9_./()-]+)",
+)
+_DOC_REF_LABEL_RE = re.compile(r"Document\s+reference\s+ID", re.I)
 _MONTHS = {
     "Jan": 1,
     "Feb": 2,
@@ -147,9 +151,7 @@ def map_api_notice(raw: dict[str, Any], *, proceeding: dict[str, Any] | None = N
             raw.get("proceedingReqId") or proceeding.get("proceedingReqId") or ""
         ).strip()
         or None,
-        "response_state": "submit_response" if has_submit else "view_response",
         "has_submit_response": has_submit,
-        "scrape_path": "api",
     }
 
 
@@ -246,6 +248,49 @@ async def _labeled_subtitle(card: Locator, label: str) -> Optional[str]:
     return None
 
 
+def parse_document_reference_id(card_text: str) -> Optional[str]:
+    """Extract ITBA/... document reference from flat card text."""
+    match = DOC_REF_RE.search(card_text or "")
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+async def _document_reference_id(card: Locator, card_text: str) -> Optional[str]:
+    """Value sits in ``.heading6`` above ``Document reference ID`` label."""
+    label = card.locator(".dataHeading, span.dataHeading, div.dataHeading").filter(
+        has_text=_DOC_REF_LABEL_RE
+    )
+    if await label.count():
+        parent = label.first.locator("xpath=..")
+        heading = parent.locator(".heading6, mat-label.heading6").first
+        if await heading.count():
+            value = await _inner_text(heading)
+            if value and DOC_REF_RE.search(value):
+                return value.strip()
+        prev = label.first.locator(
+            "xpath=preceding-sibling::*[contains(@class,'heading6')][1]"
+        )
+        if await prev.count():
+            value = await _inner_text(prev.first)
+            if value and DOC_REF_RE.search(value):
+                return value.strip()
+    return parse_document_reference_id(card_text)
+
+
+async def _filing_provision(card: Locator) -> Optional[str]:
+    """Section like ``142(1)`` — not the ITBA document reference heading6."""
+    sections = card.locator(".heading6, mat-label.heading6")
+    count = await sections.count()
+    for index in range(count):
+        raw = await _inner_text(sections.nth(index))
+        if not raw or DOC_REF_RE.search(raw):
+            continue
+        if SECTION_RE.match(raw):
+            return raw.strip()
+    return None
+
+
 async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
     text = await _inner_text(card)
     if not text:
@@ -263,14 +308,8 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
             if digits:
                 din = digits.group(0)
 
-    provision = None
-    section = card.locator(".heading6, mat-label.heading6").first
-    if await section.count():
-        raw_section = await _inner_text(section)
-        if SECTION_RE.match(raw_section):
-            provision = raw_section.strip()
-        elif raw_section:
-            provision = raw_section.strip()
+    provision = await _filing_provision(card)
+    doc_ref = await _document_reference_id(card, text)
 
     description = await _labeled_subtitle(card, "Description")
     if not description:
@@ -295,15 +334,12 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
             due = dates[1]
 
     has_submit = False
-    response_state = "view_response"
     submit_btn = card.locator("button").filter(has_text=SUBMIT_RESPONSE_RE)
     view_btn = card.locator("button").filter(has_text=VIEW_RESPONSE_RE)
     if await submit_btn.count() and await submit_btn.first.is_visible():
         has_submit = True
-        response_state = "submit_response"
     elif await view_btn.count():
         has_submit = False
-        response_state = "view_response"
 
     if not din and not provision:
         return None
@@ -312,16 +348,14 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
         "source": SOURCE,
         "din": din,
         "filing_provision": provision,
-        "document_reference_id": None,
+        "document_reference_id": doc_ref,
         "description": description,
         "issued_on": _date_iso(issued),
         "response_due_date": _date_iso(due),
         "assessment_year": None,
         "proceeding_name": None,
         "proceeding_req_id": None,
-        "response_state": response_state,
         "has_submit_response": has_submit,
-        "scrape_path": "ui",
     }
 
 
@@ -434,11 +468,9 @@ async def _harvest_proceeding(
         return None
 
     ui_notices = await _scrape_notices_ui(page)
-    scrape_path = "ui"
     notices = ui_notices
     if not notices and api_notices:
         notices = api_notices
-        scrape_path = "api"
         logger.info(
             "UI notice parse empty; using API fallback (%s notices)",
             len(api_notices),
@@ -456,9 +488,7 @@ async def _harvest_proceeding(
         latest["proceeding_name"] = meta.get("proceeding_name")
     if not latest.get("assessment_year"):
         latest["assessment_year"] = meta.get("assessment_year")
-    latest["scrape_path"] = scrape_path if latest.get("scrape_path") == "ui" else latest.get(
-        "scrape_path", scrape_path
-    )
+    latest.pop("scrape_path", None)
     return latest
 
 

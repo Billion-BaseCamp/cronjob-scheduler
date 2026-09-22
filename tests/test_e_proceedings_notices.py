@@ -95,9 +95,10 @@ def test_map_api_notice_actionable() -> None:
     assert mapped["din"] == "100120049489"
     assert mapped["filing_provision"] == "142(1)"
     assert mapped["has_submit_response"] is True
-    assert mapped["response_state"] == "submit_response"
+    assert "response_state" not in mapped
+    assert mapped["document_reference_id"] == "ITBA/AST/F/142(1)/2026-27/1093524726(1)"
     assert mapped["assessment_year"] == "2025-26"
-    assert mapped["scrape_path"] == "api"
+    assert "scrape_path" not in mapped
 
 
 def test_map_api_notice_responded() -> None:
@@ -112,7 +113,22 @@ def test_map_api_notice_responded() -> None:
         }
     )
     assert mapped["has_submit_response"] is False
-    assert mapped["response_state"] == "view_response"
+    assert "response_state" not in mapped
+
+
+def test_parse_document_reference_id_from_text() -> None:
+    from app.portal.actions.read_e_proceedings_notices import (
+        parse_document_reference_id,
+    )
+
+    text = (
+        "142(1) ITBA/AST/F/142(1)/2026-27/1093524726(1) Document reference ID "
+        "Description : [ITBA]Notice"
+    )
+    assert (
+        parse_document_reference_id(text)
+        == "ITBA/AST/F/142(1)/2026-27/1093524726(1)"
+    )
 
 
 def test_notices_from_api_payload_detects_din_list() -> None:
