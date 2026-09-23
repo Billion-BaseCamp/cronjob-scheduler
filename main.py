@@ -62,7 +62,7 @@ async def _start_portal_poller(app: FastAPI) -> None:
 async def _cancel_task(task, label: str) -> None:
     if task is None or task.done():
         return
-    logger.info("Shutting down %s", label)
+    logger.info(f"Shutting down {label}")
     task.cancel()
     try:
         await task
