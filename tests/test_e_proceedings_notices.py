@@ -93,7 +93,7 @@ def test_map_api_notice_actionable() -> None:
     }
     mapped = map_api_notice(raw)
     assert mapped["din"] == "100120049489"
-    assert mapped["filing_provision"] == "142(1)"
+    assert mapped["notice_section"] == "142(1)"
     assert mapped["has_submit_response"] is True
     assert "response_state" not in mapped
     assert mapped["document_reference_id"] == "ITBA/AST/F/142(1)/2026-27/1093524726(1)"
@@ -165,7 +165,7 @@ def test_diagnose_notice_142_actionable() -> None:
     summary = diagnose_notice(
         {
             "source": "e_proceedings",
-            "filing_provision": "142(1)",
+            "notice_section": "142(1)",
             "response_due_date": "2026-09-23",
             "has_submit_response": True,
         }
@@ -181,7 +181,7 @@ def test_attach_summaries() -> None:
             {
                 "source": "e_proceedings",
                 "din": "1",
-                "filing_provision": "142(1)",
+                "notice_section": "142(1)",
                 "response_due_date": "2026-09-23",
                 "has_submit_response": True,
             }

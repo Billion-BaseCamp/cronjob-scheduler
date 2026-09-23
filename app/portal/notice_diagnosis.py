@@ -29,7 +29,7 @@ def _parse_iso_date(value: Any) -> Optional[date]:
 
 def diagnose_notice(notice: Mapping[str, Any]) -> str:
     """Short advisor-facing summary for one notice row."""
-    provision = (notice.get("filing_provision") or "").strip() or "notice"
+    provision = (notice.get("notice_section") or "").strip() or "notice"
     due = _parse_iso_date(notice.get("response_due_date"))
     due_label = due.strftime("%d-%b-%Y") if due else "unknown date"
     actionable = bool(notice.get("has_submit_response"))

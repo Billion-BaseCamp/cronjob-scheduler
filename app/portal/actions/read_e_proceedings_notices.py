@@ -136,7 +136,7 @@ def map_api_notice(raw: dict[str, Any], *, proceeding: dict[str, Any] | None = N
     return {
         "source": SOURCE,
         "din": str(raw.get("documentIdentificationNumber") or "").strip() or None,
-        "filing_provision": (raw.get("noticeSection") or "").strip() or None,
+        "notice_section": (raw.get("noticeSection") or "").strip() or None,
         "document_reference_id": (raw.get("documentReferenceId") or "").strip() or None,
         "description": (raw.get("description") or "").strip() or None,
         "issued_on": issued.isoformat() if issued else None,
@@ -278,8 +278,8 @@ async def _document_reference_id(card: Locator, card_text: str) -> Optional[str]
     return parse_document_reference_id(card_text)
 
 
-async def _filing_provision(card: Locator) -> Optional[str]:
-    """Section like ``142(1)`` — not the ITBA document reference heading6."""
+async def _notice_section(card: Locator) -> Optional[str]:
+    """Notice u/s value like ``142(1)`` — not the ITBA document reference heading6."""
     sections = card.locator(".heading6, mat-label.heading6")
     count = await sections.count()
     for index in range(count):
@@ -308,7 +308,7 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
             if digits:
                 din = digits.group(0)
 
-    provision = await _filing_provision(card)
+    section = await _notice_section(card)
     doc_ref = await _document_reference_id(card, text)
 
     description = await _labeled_subtitle(card, "Description")
@@ -341,13 +341,13 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
     elif await view_btn.count():
         has_submit = False
 
-    if not din and not provision:
+    if not din and not section:
         return None
 
     return {
         "source": SOURCE,
         "din": din,
-        "filing_provision": provision,
+        "notice_section": section,
         "document_reference_id": doc_ref,
         "description": description,
         "issued_on": _date_iso(issued),
