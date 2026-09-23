@@ -36,7 +36,14 @@ NOTICE_CARD_SELECTOR = ".card-container.matCard, div.card-container.matCard"
 SUBMIT_RESPONSE_RE = re.compile(r"Submit Response", re.I)
 VIEW_RESPONSE_RE = re.compile(r"View Response", re.I)
 DIN_RE = re.compile(r"(?:Reference ID|DIN)\s*[:\-]?\s*(\d{8,})", re.I)
-SECTION_RE = re.compile(r"^\s*(\d{1,3}[A-Z]?(?:\(\d+\))?)\s*$", re.I)
+# Notice u/s token: 142(1), 250, 271AAC(1), 143(1)(a), 148A, 226(3), 271(1)(c)
+_SECTION_CORE = r"\d{1,3}[A-Z]{0,4}(?:\([0-9A-Za-z]+\))*"
+SECTION_RE = re.compile(rf"^\s*({_SECTION_CORE})\s*$", re.I)
+SECTION_IN_TEXT_RE = re.compile(
+    rf"(?:u/?s\.?|under\s+section)\s*({_SECTION_CORE})",
+    re.I,
+)
+SECTION_IN_DOC_REF_RE = re.compile(rf"/F/({_SECTION_CORE})/", re.I)
 DOC_REF_RE = re.compile(
     r"(ITBA/[A-Za-z0-9_./()-]+)",
 )
@@ -81,6 +88,27 @@ def parse_ui_date(text: str) -> Optional[date]:
     month = _MONTHS[match.group(2).title()[:3]]
     year = int(match.group(3))
     return date(year, month, day)
+
+
+def coerce_notice_section(*candidates: Any) -> Optional[str]:
+    """Best-effort Notice u/s from heading, label, description, or ITBA doc-ref."""
+    for raw in candidates:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        compact = re.sub(r"\s+", "", text)
+        direct = SECTION_RE.match(compact)
+        if direct:
+            return direct.group(1)
+        from_us = SECTION_IN_TEXT_RE.search(text)
+        if from_us:
+            return re.sub(r"\s+", "", from_us.group(1))
+        from_doc = SECTION_IN_DOC_REF_RE.search(text)
+        if from_doc:
+            return re.sub(r"\s+", "", from_doc.group(1))
+    return None
 
 
 def epoch_ms_to_date(value: Any) -> Optional[date]:
@@ -136,7 +164,11 @@ def map_api_notice(raw: dict[str, Any], *, proceeding: dict[str, Any] | None = N
     return {
         "source": SOURCE,
         "din": str(raw.get("documentIdentificationNumber") or "").strip() or None,
-        "notice_section": (raw.get("noticeSection") or "").strip() or None,
+        "notice_section": coerce_notice_section(
+            raw.get("noticeSection"),
+            raw.get("description"),
+            raw.get("documentReferenceId"),
+        ),
         "document_reference_id": (raw.get("documentReferenceId") or "").strip() or None,
         "description": (raw.get("description") or "").strip() or None,
         "issued_on": issued.isoformat() if issued else None,
@@ -278,7 +310,7 @@ async def _document_reference_id(card: Locator, card_text: str) -> Optional[str]
     return parse_document_reference_id(card_text)
 
 
-async def _notice_section(card: Locator) -> Optional[str]:
+async def _notice_section_from_headings(card: Locator) -> Optional[str]:
     """Notice u/s value like ``142(1)`` — not the ITBA document reference heading6."""
     sections = card.locator(".heading6, mat-label.heading6")
     count = await sections.count()
@@ -286,8 +318,9 @@ async def _notice_section(card: Locator) -> Optional[str]:
         raw = await _inner_text(sections.nth(index))
         if not raw or DOC_REF_RE.search(raw):
             continue
-        if SECTION_RE.match(raw):
-            return raw.strip()
+        section = coerce_notice_section(raw)
+        if section:
+            return section
     return None
 
 
@@ -308,12 +341,22 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
             if digits:
                 din = digits.group(0)
 
-    section = await _notice_section(card)
     doc_ref = await _document_reference_id(card, text)
 
     description = await _labeled_subtitle(card, "Description")
     if not description:
         description = parse_labeled_field_from_text(text, "Description")
+
+    notice_us_label = await _labeled_subtitle(card, "Notice u/s")
+    if not notice_us_label:
+        notice_us_label = parse_labeled_field_from_text(text, "Notice u/s")
+
+    section = coerce_notice_section(
+        await _notice_section_from_headings(card),
+        notice_us_label,
+        description,
+        doc_ref,
+    )
 
     issued = None
     due = None

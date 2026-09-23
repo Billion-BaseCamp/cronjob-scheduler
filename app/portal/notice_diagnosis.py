@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Mapping, Optional
 
+from app.portal.notice_sections import section_short_name
+
 
 def _parse_iso_date(value: Any) -> Optional[date]:
     if value is None:
@@ -29,35 +31,31 @@ def _parse_iso_date(value: Any) -> Optional[date]:
 
 def diagnose_notice(notice: Mapping[str, Any]) -> str:
     """Short advisor-facing summary for one notice row."""
-    provision = (notice.get("notice_section") or "").strip() or "notice"
+    section = (notice.get("notice_section") or "").strip() or "notice"
+    label = section_short_name(
+        None if section == "notice" else section,
+        default="E-proceeding notice",
+    )
     due = _parse_iso_date(notice.get("response_due_date"))
     due_label = due.strftime("%d-%b-%Y") if due else "unknown date"
     actionable = bool(notice.get("has_submit_response"))
     source = (notice.get("source") or "e_proceedings").strip()
+    us = f"u/s {section}" if section != "notice" else "notice"
 
     if source == "e_proceedings":
         if actionable:
-            if provision.startswith("142"):
+            # Keep 142(1) wording sharp — highest operational urgency at filing stage.
+            if section.upper().startswith("142"):
                 return (
-                    f"Critical inquiry notice u/s {provision} pending response. "
+                    f"Critical inquiry notice {us} pending response. "
                     f"Legal timeline closes on {due_label}."
                 )
-            if provision.startswith("143"):
-                return (
-                    f"Assessment notice u/s {provision} awaiting response "
-                    f"(due {due_label})."
-                )
-            if provision.startswith("139"):
-                return (
-                    f"Defect notice u/s {provision} pending response "
-                    f"(due {due_label})."
-                )
             return (
-                f"E-proceeding {provision} pending Submit Response "
+                f"{label} {us} pending Submit Response "
                 f"(due {due_label})."
             )
         return (
-            f"E-proceeding {provision} already responded "
+            f"{label} {us} already responded "
             f"(latest notice; due was {due_label})."
         )
 

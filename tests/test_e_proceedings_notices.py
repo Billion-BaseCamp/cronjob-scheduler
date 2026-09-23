@@ -131,6 +131,104 @@ def test_parse_document_reference_id_from_text() -> None:
     )
 
 
+def test_coerce_notice_section_fallbacks() -> None:
+    from app.portal.actions.read_e_proceedings_notices import coerce_notice_section
+
+    assert coerce_notice_section("271AAC(1)") == "271AAC(1)"
+    assert coerce_notice_section("142 (1)") == "142(1)"
+    assert (
+        coerce_notice_section(
+            None,
+            "[ITBA]Show Cause Notice u/s 271AAC(1)of Income Tax Act 1961.",
+        )
+        == "271AAC(1)"
+    )
+    assert (
+        coerce_notice_section(
+            None,
+            None,
+            "ITBA/PNL/F/271AAC(1)/2025-26/1085010753(1)",
+        )
+        == "271AAC(1)"
+    )
+    # Prefer explicit section over description
+    assert (
+        coerce_notice_section(
+            "142(1)",
+            "[ITBA]Show Cause Notice u/s 271AAC(1)of Income Tax Act 1961.",
+        )
+        == "142(1)"
+    )
+    # Non-section ITBA path segment must not invent a value
+    assert coerce_notice_section("ITBA/NFAC/F/APL_1/2026-27/1091979371(1)") is None
+
+
+def test_section_re_matches_notice_u_s_values() -> None:
+    from app.portal.actions.read_e_proceedings_notices import SECTION_RE
+
+    for value in (
+        "142(1)",
+        "250",
+        "143(3)",
+        "139(9)",
+        "271A",
+        "271AAC(1)",
+        "143(1)(a)",
+        "148A",
+        "226(3)",
+        "271FAA",
+    ):
+        match = SECTION_RE.match(value)
+        assert match is not None, value
+        assert match.group(1) == value
+
+    assert SECTION_RE.match("ITBA/AST/F/142(1)/2026-27/1093524726(1)") is None
+    assert SECTION_RE.match("[ITBA]Show Cause Notice u/s 271AAC(1)") is None
+
+
+def test_classify_notice_section_catalog() -> None:
+    from app.portal.notice_sections import classify_notice_section
+
+    row = classify_notice_section("271AAC(1)")
+    assert row["category"] == "Penalties & Fees"
+    assert "unexplained" in (row["short_name"] or "").lower()
+
+    row = classify_notice_section("143(2)")
+    assert row["short_name"] == "Scrutiny assessment notice"
+
+    row = classify_notice_section("148A")
+    assert "reopening" in (row["short_name"] or "").lower()
+
+    row = classify_notice_section("999Z")
+    assert row["short_name"] is None
+
+
+def test_diagnose_notice_271aac_and_250() -> None:
+    penalty = diagnose_notice(
+        {
+            "source": "e_proceedings",
+            "notice_section": "271AAC(1)",
+            "response_due_date": "2026-01-23",
+            "has_submit_response": False,
+        }
+    )
+    assert "271AAC(1)" in penalty
+    assert "unexplained" in penalty.lower()
+    assert "already responded" in penalty.lower()
+
+    appeal = diagnose_notice(
+        {
+            "source": "e_proceedings",
+            "notice_section": "250",
+            "response_due_date": "2026-08-26",
+            "has_submit_response": True,
+        }
+    )
+    assert "250" in appeal
+    assert "Appellate" in appeal
+    assert "pending" in appeal.lower()
+
+
 def test_notices_from_api_payload_detects_din_list() -> None:
     payload = {
         "header": {},
