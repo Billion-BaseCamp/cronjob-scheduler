@@ -31,10 +31,4 @@ tzlocal==5.3.1
 uvicorn==0.37.0
 watchfiles==1.1.0
 websockets==15.0.1
-# TEMPORARY staging tag while nucleus#24 is under review.
-# Has portal_automation (v0.50.4+) and account_aggregator models.
-# Revert to a vX.Y.Z release tag once #24 merges; the aa-staging-* tag
-# is disposable and will be deleted.
-nucleus @ git+https://github.com/Billion-BaseCamp/nucleus.git@aa-staging-20260917.1
-redis==5.2.1
-httpx==0.28.1
+nucleus @ git+https://github.com/Billion-BaseCamp/nucleus.git@v0.50.8

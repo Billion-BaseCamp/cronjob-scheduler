@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 
 from app.core.config import settings  # sets dummy DATABASE_URL_SYNC first
 import nucleus.models  # noqa: F401  register Client, FY, Quarter, portal jobs
+
 from app.core.logger import logger
 from app.db.database import check_db_connection, engine
 from app.jobs.birthday_reminder_job import setup_birthday_reminder_job
@@ -31,49 +32,6 @@ logging.basicConfig(
 logging.getLogger("botocore").setLevel(logging.WARNING)
 logging.getLogger("boto3").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
-
-
-async def _start_aa_worker(app: FastAPI) -> None:
-    # Imported lazily and only when enabled: app.aa imports
-    # nucleus.models.account_aggregator, which does not exist in older pinned
-    # nucleus versions. A module-level import would raise ImportError at
-    # startup and take down every cron job in this service.
-    app.state.aa_tasks = []
-    if not (settings.AA_WORKER_ENABLED or settings.AA_SWEEPER_ENABLED):
-        return
-    try:
-        from app.aa.worker import (
-            run_sweeper as run_aa_sweeper,
-            run_worker as run_aa_worker,
-        )
-    except ImportError:
-        logger.exception(
-            "AA worker enabled but its models are unavailable — check the "
-            "nucleus pin. Other cron jobs are unaffected."
-        )
-        return
-    if settings.AA_WORKER_ENABLED:
-        app.state.aa_tasks.append(
-            asyncio.create_task(run_aa_worker(), name="aa-worker")
-        )
-    if settings.AA_SWEEPER_ENABLED:
-        # Internally guarded by a Postgres advisory lock: safe to start on
-        # every replica, but only one will actually sweep.
-        app.state.aa_tasks.append(
-            asyncio.create_task(run_aa_sweeper(), name="aa-sweeper")
-        )
-    if app.state.aa_tasks:
-        logger.info("AA background tasks started: %s", len(app.state.aa_tasks))
-
-
-async def _stop_aa_worker(app: FastAPI) -> None:
-    tasks = getattr(app.state, "aa_tasks", [])
-    for task in tasks:
-        task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-        logger.info("AA background tasks stopped")
-
 
 async def _start_portal_poller(app: FastAPI) -> None:
     app.state.poller_task = None
@@ -101,7 +59,6 @@ async def _start_portal_poller(app: FastAPI) -> None:
         run_portal_sweeper(), name="portal-automation-sweeper"
     )
 
-
 async def _cancel_task(task, label: str) -> None:
     if task is None or task.done():
         return
@@ -111,7 +68,6 @@ async def _cancel_task(task, label: str) -> None:
         await task
     except asyncio.CancelledError:
         pass
-
 
 async def _stop_portal_poller(app: FastAPI) -> None:
     await _cancel_task(getattr(app.state, "poller_task", None), "Playwright poller")
@@ -131,10 +87,11 @@ async def lifespan(app: FastAPI):
         await setup_quarter_transition_job()
         await setup_birthday_reminder_job()
         start_scheduler()
+
         logger.success("Cron scheduler started")
-        await _start_aa_worker(app)
         await _start_portal_poller(app)
         logger.info("Application ready")
+        
     except Exception as e:
         logger.exception(f"Error during startup: {str(e)}")
         raise
@@ -148,10 +105,6 @@ async def lifespan(app: FastAPI):
         await _stop_portal_poller(app)
     except Exception as e:
         logger.exception(f"Error stopping portal poller: {str(e)}")
-    try:
-        await _stop_aa_worker(app)
-    except Exception as e:
-        logger.exception(f"Error stopping AA worker: {str(e)}")
     try:
         stop_scheduler()
         logger.success("Scheduler stopped successfully")
@@ -211,10 +164,6 @@ async def root():
             "concurrency": settings.WORKER_CONCURRENCY,
             "note": "Queue poller, not a CronTrigger",
         },
-        "aa_worker": {
-            "enabled": settings.AA_WORKER_ENABLED,
-            "sweeper_enabled": settings.AA_SWEEPER_ENABLED,
-        },
     }
 
 
@@ -253,8 +202,6 @@ async def health_check(request: Request):
         "poller": poller,
         "sweeper": sweeper,
         "portal_worker_enabled": settings.PORTAL_WORKER_ENABLED,
-        "aa_worker_enabled": settings.AA_WORKER_ENABLED,
-        "aa_sweeper_enabled": settings.AA_SWEEPER_ENABLED,
         "worker_id": WORKER_ID,
         "concurrency": settings.WORKER_CONCURRENCY,
     }
