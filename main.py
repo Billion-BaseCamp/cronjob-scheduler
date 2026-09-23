@@ -164,10 +164,6 @@ async def root():
             "concurrency": settings.WORKER_CONCURRENCY,
             "note": "Queue poller, not a CronTrigger",
         },
-        "aa_worker": {
-            "enabled": settings.AA_WORKER_ENABLED,
-            "sweeper_enabled": settings.AA_SWEEPER_ENABLED,
-        },
     }
 
 
@@ -206,8 +202,6 @@ async def health_check(request: Request):
         "poller": poller,
         "sweeper": sweeper,
         "portal_worker_enabled": settings.PORTAL_WORKER_ENABLED,
-        "aa_worker_enabled": settings.AA_WORKER_ENABLED,
-        "aa_sweeper_enabled": settings.AA_SWEEPER_ENABLED,
         "worker_id": WORKER_ID,
         "concurrency": settings.WORKER_CONCURRENCY,
     }
