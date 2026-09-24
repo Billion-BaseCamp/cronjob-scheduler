@@ -40,6 +40,9 @@ CONTINUE_AFTER_PAN_SELECTOR = (
     "button.large-button-primary.width.marTop16"
 )
 PASSWORD_SELECTOR = "#loginPasswordField"
+# Some PANs show OTP vs Password before #loginPasswordField exists.
+# value="2" is Password (value="1" is Aadhaar OTP). Id is not stable.
+PASSWORD_RADIO_SELECTOR = 'mat-radio-button[value="2"] label.mdc-label'
 PASSWORD_CHECKBOX_SELECTOR = "#passwordCheckBox-input"
 CONTINUE_AFTER_PASSWORD_SELECTOR = (
     "button.large-button-primary.width.marTop26"
@@ -129,12 +132,24 @@ async def _click_login_button(
     return await login_api_error(await pending.value)
 
 
+async def _select_password_login_if_needed(page: Page) -> None:
+    """Click Password when the portal hides the field behind a radio."""
+    password = page.locator(PASSWORD_SELECTOR)
+    radio = page.locator(PASSWORD_RADIO_SELECTOR)
+    await password.or_(radio).first.wait_for(state="visible", timeout=20_000)
+    if await password.is_visible():
+        return
+    logger.info("Selecting Password so the password field appears")
+    await radio.click()
+    await password.wait_for(state="visible")
+
+
 async def _wait_for_password_screen(page: Page) -> None:
     await page.wait_for_function(
         "() => location.hash.includes('/login/password')",
         timeout=20_000,
     )
-    await page.locator(PASSWORD_SELECTOR).wait_for(state="visible")
+    await _select_password_login_if_needed(page)
     await page.locator(CONTINUE_AFTER_PASSWORD_SELECTOR).wait_for(
         state="visible"
     )
