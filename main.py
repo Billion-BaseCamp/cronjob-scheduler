@@ -89,8 +89,40 @@ async def lifespan(app: FastAPI):
         start_scheduler()
 
         logger.success("Cron scheduler started")
+
+        # Account Aggregator background loops. Imported lazily and only when
+        # enabled: app.aa imports nucleus.models.account_aggregator, which does
+        # not exist in older pinned nucleus versions. A module-level import
+        # would raise ImportError at startup and take down every cron job in
+        # this service — financial year, quarter transition, birthday emails —
+        # on any deployment whose nucleus pin predates the AA models.
+        app.state.aa_tasks = []
+        if settings.AA_WORKER_ENABLED or settings.AA_SWEEPER_ENABLED:
+            try:
+                from app.aa.worker import (
+                    run_sweeper as run_aa_sweeper,
+                    run_worker as run_aa_worker,
+                )
+            except ImportError:
+                logger.exception(
+                    "AA worker enabled but its models are unavailable — check the "
+                    "nucleus pin. Other cron jobs are unaffected."
+                )
+            else:
+                if settings.AA_WORKER_ENABLED:
+                    app.state.aa_tasks.append(
+                        asyncio.create_task(run_aa_worker(), name="aa-worker")
+                    )
+                if settings.AA_SWEEPER_ENABLED:
+                    # Internally guarded by a Postgres advisory lock: safe to
+                    # start on every replica, but only one will actually sweep.
+                    app.state.aa_tasks.append(
+                        asyncio.create_task(run_aa_sweeper(), name="aa-sweeper")
+                    )
+        if app.state.aa_tasks:
+            logger.info(f"AA background tasks started: {len(app.state.aa_tasks)}")
         await _start_portal_poller(app)
-        logger.info("Application ready")
+        logger.info("Application ready!")
         
     except Exception as e:
         logger.exception(f"Error during startup: {str(e)}")
@@ -105,6 +137,14 @@ async def lifespan(app: FastAPI):
         await _stop_portal_poller(app)
     except Exception as e:
         logger.exception(f"Error stopping portal poller: {str(e)}")
+    # Cancel the AA loops and wait for them, so an in-flight job finishes its
+    # bookkeeping rather than being orphaned in `running` for the sweeper to
+    # rescue later.
+    for task in getattr(app.state, "aa_tasks", []):
+        task.cancel()
+    if getattr(app.state, "aa_tasks", []):
+        await asyncio.gather(*app.state.aa_tasks, return_exceptions=True)
+        logger.info("AA background tasks stopped")
     try:
         stop_scheduler()
         logger.success("Scheduler stopped successfully")
@@ -112,6 +152,7 @@ async def lifespan(app: FastAPI):
         logger.exception(f"Error during shutdown: {str(e)}")
     await engine.dispose()
     logger.info("Shutdown complete")
+    
 
 
 app = FastAPI(
