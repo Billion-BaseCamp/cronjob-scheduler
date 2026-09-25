@@ -10,9 +10,12 @@ List page (``#/dashboard/itrStatus``, ``app-itr-status``):
      (``button#okButton``)
   3. Among remaining cards, open View Details on the latest Filing Date
 
-Lifecycle page (``app-itr-status-life-cycle``): scrape every
-``div.matStepStatus``. e-verified if any label contains
-``Successfully e-verified``. ``itr_status`` is the first (latest) step.
+Lifecycle page (``app-itr-status-life-cycle``): read Filing Type from
+``div.ftype mat-label.leftSideVal`` next to the ``Filing Type`` label, and
+scrape every ``div.matStepStatus``. e-verified when Filing Type is Defective
+or Rectification, or a step contains ``Successfully e-verified``,
+``ITR-V received`` (hyphen optional), or the whole word ``processed`` or
+``processing``. ``itr_status`` is the first (latest) step.
 
 JSON XHR is deferred; this scrape is the source of truth for now.
 """
@@ -35,6 +38,13 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 E_VERIFIED_LABEL = "Successfully e-verified"
+_VERIFIED_FILING_TYPES = frozenset({"defective", "rectification"})
+_ITRV_RECEIVED = "itrv received"
+_WHOLE_WORD_PROCESSED_RE = re.compile(
+    r"\b(?:processed|processing)\b",
+    re.IGNORECASE,
+)
+_FILING_TYPE_LABEL_RE = re.compile(r"Filing Type")
 FILTER_OPEN_SELECTOR = "button#filterbtn1"
 FILTER_APPLY_SELECTOR = "button#okButton"
 FILTER_PANEL_SELECTOR = "div.filterBox"
@@ -136,6 +146,31 @@ async def _step_labels(root: Locator) -> tuple[str, ...]:
         if text:
             labels.append(text)
     return tuple(labels)
+
+
+def _step_counts_as_verified(label: str) -> bool:
+    folded = label.casefold()
+    if E_VERIFIED_LABEL.casefold() in folded:
+        return True
+    if _ITRV_RECEIVED in folded.replace("-", ""):
+        return True
+    return _WHOLE_WORD_PROCESSED_RE.search(label) is not None
+
+
+def is_e_verified(filing_type: str, labels: tuple[str, ...]) -> bool:
+    """True when the details page shows a verified filing or timeline step."""
+    if filing_type.strip().casefold() in _VERIFIED_FILING_TYPES:
+        return True
+    return any(_step_counts_as_verified(label) for label in labels)
+
+
+async def _filing_type(root: Locator) -> str:
+    """Filing Type value on the details page (``Original``, ``Rectification``)."""
+    block = root.locator("div.brdrRight").filter(has_text=_FILING_TYPE_LABEL_RE)
+    value = block.locator("div.ftype mat-label.leftSideVal")
+    if await value.count() == 0:
+        return ""
+    return (await value.first.inner_text()).strip()
 
 
 async def _filing_date_of(card: Locator) -> Optional[datetime]:
@@ -292,14 +327,14 @@ async def read_status_for_assessment_year(
 
     lifecycle = page.locator(LIFECYCLE_SELECTOR)
     labels = await _step_labels(lifecycle)
-    e_verified = any(
-        E_VERIFIED_LABEL.lower() in label.lower() for label in labels
-    )
+    filing_type = await _filing_type(lifecycle)
+    e_verified = is_e_verified(filing_type, labels)
     portal_status = labels[0] if labels else None
     logger.info(
-        "A.Y. %s e_verified=%s portal_status=%s steps=%s",
+        "A.Y. %s e_verified=%s filing_type=%s portal_status=%s steps=%s",
         ay,
         e_verified,
+        filing_type,
         portal_status,
         labels,
     )
