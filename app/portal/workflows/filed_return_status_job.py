@@ -143,12 +143,14 @@ def _apply_login_outcome(job, client, outcome: LoginOutcome) -> bool:
         return False
 
     if outcome == LoginOutcome.INVALID_USER_ID:
+        client.it_portal_username = None
         _fail(
             job,
             error_code="INVALID_USER_ID",
             message=(
-                "Portal rejected the user id (PAN). "
-                "The saved password was not changed."
+                "Portal rejected the user id. "
+                "The saved portal username was cleared. "
+                "The password was kept; the next run uses the client PAN."
             ),
         )
         return False
