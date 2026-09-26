@@ -13,9 +13,9 @@ List page (``#/dashboard/itrStatus``, ``app-itr-status``):
 Lifecycle page (``app-itr-status-life-cycle``): read Filing Type from
 ``div.ftype mat-label.leftSideVal`` next to the ``Filing Type`` label, and
 scrape every ``div.matStepStatus``. e-verified when Filing Type is Defective
-or Rectification, or a step contains ``Successfully e-verified``,
-``ITR-V received`` (hyphen optional), or the whole word ``processed`` or
-``processing``. ``itr_status`` is the first (latest) step.
+or Rectification, or a step contains ``Successfully e-verified`` or
+``ITR-V received`` (hyphen optional). ``itr_status`` is the first (latest)
+step.
 
 JSON XHR is deferred; this scrape is the source of truth for now.
 """
@@ -38,12 +38,9 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 E_VERIFIED_LABEL = "Successfully e-verified"
+# Defective / Rectification exist only after the return was already verified.
 _VERIFIED_FILING_TYPES = frozenset({"defective", "rectification"})
 _ITRV_RECEIVED = "itrv received"
-_WHOLE_WORD_PROCESSED_RE = re.compile(
-    r"\b(?:processed|processing)\b",
-    re.IGNORECASE,
-)
 _FILING_TYPE_LABEL_RE = re.compile(r"Filing Type")
 FILTER_OPEN_SELECTOR = "button#filterbtn1"
 FILTER_APPLY_SELECTOR = "button#okButton"
@@ -152,9 +149,7 @@ def _step_counts_as_verified(label: str) -> bool:
     folded = label.casefold()
     if E_VERIFIED_LABEL.casefold() in folded:
         return True
-    if _ITRV_RECEIVED in folded.replace("-", ""):
-        return True
-    return _WHOLE_WORD_PROCESSED_RE.search(label) is not None
+    return _ITRV_RECEIVED in folded.replace("-", "")
 
 
 def is_e_verified(filing_type: str, labels: tuple[str, ...]) -> bool:
