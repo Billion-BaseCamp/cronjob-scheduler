@@ -1,4 +1,4 @@
-"""CHECK_PENDING_ACTIONS_NOTICES: read-only notice harvest (Phase 1: e-Proceedings)."""
+"""CHECK_PENDING_ACTIONS_NOTICES: read-only harvest of e-Proceedings + outstanding demand."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from app.portal.workflows.pending_actions_notices_job import (
 )
 
 WORKFLOW = "CHECK_PENDING_ACTIONS_NOTICES"
-# Phase 1 — A only. Add outstanding_demand / compliance_portal in later phases.
-PHASE1_SOURCES = ("e_proceedings",)
+# compliance_portal joins in Phase 3.
+NOTICE_SOURCES = ("e_proceedings", "outstanding_demand")
 
 
 async def run_check_pending_actions_notices(db, job) -> None:
@@ -16,5 +16,5 @@ async def run_check_pending_actions_notices(db, job) -> None:
         db,
         job,
         workflow=WORKFLOW,
-        sources=PHASE1_SOURCES,
+        sources=NOTICE_SOURCES,
     )

@@ -29,8 +29,63 @@ def _parse_iso_date(value: Any) -> Optional[date]:
         return None
 
 
+def format_inr(amount: Any) -> str:
+    """Indian digit grouping: 4190703 → ₹41,90,703."""
+    try:
+        value = int(round(float(amount)))
+    except (TypeError, ValueError):
+        return "₹?"
+    sign = "-" if value < 0 else ""
+    digits = str(abs(value))
+    if len(digits) > 3:
+        head, tail = digits[:-3], digits[-3:]
+        groups = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            groups.insert(0, head)
+        digits = ",".join(groups + [tail])
+    return f"{sign}₹{digits}"
+
+
+def diagnose_outstanding_demand(demand: Mapping[str, Any]) -> str:
+    section = (demand.get("notice_section") or "").strip()
+    us = f"u/s {section}" if section else "(section unknown)"
+    ay = demand.get("assessment_year")
+    where = f"{us}, AY {ay}" if ay else us
+    principal = demand.get("outstanding_demand_amount")
+    amount = format_inr(principal) if principal is not None else "amount unknown"
+
+    if demand.get("is_extinguished"):
+        return f"Demand {where} is extinguished ({amount}); no action needed."
+
+    interest = demand.get("accrued_interest") or demand.get("final_interest")
+    total = f"{amount} + interest {format_inr(interest)}" if interest else amount
+    status = demand.get("current_status") or "status unknown"
+    actions = demand.get("actions") or {}
+    response_type = demand.get("response_type")
+    ao = demand.get("ao_response")
+    ao_part = f" AO: {ao}." if ao else ""
+
+    if actions.get("submit_response"):
+        return (
+            f"Outstanding demand {total} {where} — {status}. "
+            f"No response filed; Submit Response pending.{ao_part}"
+        )
+    if response_type:
+        tail = " Re-Submit Response available." if actions.get("resubmit_response") else ""
+        return (
+            f"Outstanding demand {total} {where} — {status}. "
+            f"Response: {response_type}.{ao_part}{tail}"
+        )
+    return f"Outstanding demand {total} {where} — {status}.{ao_part}"
+
+
 def diagnose_notice(notice: Mapping[str, Any]) -> str:
     """Short advisor-facing summary for one notice row."""
+    if (notice.get("source") or "").strip() == "outstanding_demand":
+        return diagnose_outstanding_demand(notice)
     section = (notice.get("notice_section") or "").strip() or "notice"
     label = section_short_name(
         None if section == "notice" else section,

@@ -1,7 +1,7 @@
 """Shared shell: login → harvest selected pending-action notice sources → logout.
 
-Phase 1 wires ``e_proceedings`` only. Outstanding demand / compliance plug into
-``SOURCES`` later without changing the registry entry shape.
+Sources: ``e_proceedings`` and ``outstanding_demand``. Compliance portal plugs
+into ``SOURCES`` later without changing the registry entry shape.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from app.portal.actions.read_e_proceedings_notices import (
     NoticeHarvest,
     read_e_proceedings_notices,
 )
+from app.portal.actions.read_outstanding_demand import read_outstanding_demand
 from app.portal.evidence import upload_screenshot
 from app.portal.evidence_step import (
     EVIDENCE_E_PROCEEDINGS,
@@ -35,8 +36,8 @@ HarvestFn = Callable[[Any], Awaitable[NoticeHarvest]]
 
 SOURCES: dict[str, HarvestFn] = {
     "e_proceedings": read_e_proceedings_notices,
-    # Phase 2/3:
-    # "outstanding_demand": read_outstanding_demand,
+    "outstanding_demand": read_outstanding_demand,
+    # Phase 3:
     # "compliance_portal": read_compliance_portal_notices,
 }
 
@@ -281,7 +282,13 @@ async def run_pending_actions_notices_job(
 
             for name in sources:
                 harvest_fn = SOURCES[name]
-                harvest = await harvest_fn(page)
+                try:
+                    harvest = await harvest_fn(page)
+                except Exception as exc:
+                    logger.exception("Source %s crashed for job %s", name, job.id)
+                    harvest = NoticeHarvest(
+                        source=name, ok=False, error=f"crashed: {type(exc).__name__}"
+                    )
                 source_results[name] = _harvest_as_source_result(harvest)
                 if harvest.ok:
                     any_ok = True

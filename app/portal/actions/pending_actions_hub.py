@@ -1,4 +1,4 @@
-"""Open Pending Actions menu / return to the e-Proceedings list.
+"""Open Pending Actions menu / e-Proceedings list / Response to Outstanding Demand.
 
 Selectors from live portal HTML. Used by notice harvest actions.
 """
@@ -20,6 +20,14 @@ PENDING_ACTIONS_FALLBACK = (
 )
 E_PROCEEDINGS_MENU_SELECTOR = (
     'button.mat-mdc-menu-item:has-text("e-Proceedings")'
+)
+OUTSTANDING_DEMAND_MENU_SELECTOR = (
+    'button.mat-mdc-menu-item:has-text("Response to Outstanding Demand")'
+)
+# Absolute routerLink on the dashboard "outstanding demand(s)" modal.
+OUTSTANDING_DEMAND_HASH = "#/response-to-outstanding-demand/master"
+OUTSTANDING_DEMAND_HEADING = (
+    'h3.heading3:has-text("Response to Outstanding Demand")'
 )
 SUO_MOTO_SELECTOR = "#Suo_Moto"
 FOR_YOUR_ACTION_TAB = re.compile(r"For your Action", re.I)
@@ -68,6 +76,44 @@ async def open_e_proceedings_for_your_action(page: Page | None) -> bool:
         return True
     except PlaywrightTimeout:
         logger.warning("e-Proceedings nav timed out url=%s", getattr(page, "url", ""))
+        return False
+
+
+async def open_response_to_outstanding_demand(page: Page | None) -> bool:
+    """Pending Actions → Response to Outstanding Demand. Return True when the page heading shows."""
+    if settings.PORTAL_AUTOMATION_DRY_RUN:
+        logger.info("Dry-run: skip outstanding demand nav")
+        return True
+    if page is None:
+        logger.warning("No browser page; skip outstanding demand nav")
+        return False
+    heading = page.locator(OUTSTANDING_DEMAND_HEADING)
+    try:
+        logger.info("Opening Pending Actions → Response to Outstanding Demand")
+        await open_pending_actions_menu(page)
+        item = page.locator(OUTSTANDING_DEMAND_MENU_SELECTOR)
+        await item.first.wait_for(state="visible", timeout=_NAV_TIMEOUT_MS)
+        await item.first.click()
+        await heading.first.wait_for(state="visible", timeout=_NAV_TIMEOUT_MS)
+        logger.info("Opened Response to Outstanding Demand url=%s", page.url)
+        return True
+    except PlaywrightTimeout:
+        logger.warning(
+            "Outstanding demand menu nav failed url=%s; trying route",
+            getattr(page, "url", ""),
+        )
+    try:
+        await page.keyboard.press("Escape")
+        await page.evaluate(
+            "(hash) => { window.location.hash = hash; }", OUTSTANDING_DEMAND_HASH
+        )
+        await heading.first.wait_for(state="visible", timeout=_NAV_TIMEOUT_MS)
+        logger.info("Opened Response to Outstanding Demand via route url=%s", page.url)
+        return True
+    except PlaywrightTimeout:
+        logger.warning(
+            "Outstanding demand nav timed out url=%s", getattr(page, "url", "")
+        )
         return False
 
 
