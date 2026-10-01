@@ -24,6 +24,7 @@ from app.portal.evidence_step import (
     EVIDENCE_LOGIN,
     primary_notices_evidence_step,
 )
+from app.portal.notice_snapshot import record_notice_outcome
 from app.portal.store import get_client
 
 logger = logging.getLogger(__name__)
@@ -262,6 +263,14 @@ async def run_pending_actions_notices_job(
                 if outcome != LoginOutcome.MISSING_PASSWORD:
                     await _attach_evidence(job, page, EVIDENCE_LOGIN)
             if not _apply_login_outcome(job, client, outcome):
+                await record_notice_outcome(
+                    db,
+                    job,
+                    client,
+                    source,
+                    error_code=job.error_code,
+                    error_message=job.error_message,
+                )
                 return
 
             job.current_step = STEPS[1]
@@ -287,6 +296,14 @@ async def run_pending_actions_notices_job(
                     message=f"{source}: {harvest.error or 'harvest failed'}",
                 )
                 _merge_result(job, payload)
+                await record_notice_outcome(
+                    db,
+                    job,
+                    client,
+                    source,
+                    error_code=job.error_code,
+                    error_message=job.error_message,
+                )
                 return
 
             job.status = "completed"
@@ -295,6 +312,9 @@ async def run_pending_actions_notices_job(
             job.worker_id = None
             job.completed_at = _now()
             _merge_result(job, payload)
+            await record_notice_outcome(
+                db, job, client, source, notices=harvest.notices
+            )
         except Exception:
             logger.exception("%s crashed for job %s", workflow, job.id)
             step = source_evidence if job.current_step == STEPS[1] else EVIDENCE_LOGIN
@@ -303,6 +323,14 @@ async def run_pending_actions_notices_job(
                 job,
                 error_code="UNKNOWN",
                 message="Worker crashed while processing this job.",
+            )
+            await record_notice_outcome(
+                db,
+                job,
+                client,
+                source,
+                error_code=job.error_code,
+                error_message=job.error_message,
             )
     finally:
         if browser is not None:

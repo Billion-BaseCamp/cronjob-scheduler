@@ -1,0 +1,243 @@
+"""Which harvested notices need an advisor, and the email copy for that.
+
+Sent only for cron-run jobs. Technical failures (portal UI drift, crashes)
+are recorded on the job and are not emailed.
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from html import escape
+from typing import Any, Mapping, Optional
+from zoneinfo import ZoneInfo
+
+from app.portal.notice_diagnosis import format_inr
+
+CRON_REQUESTED_BY = "cron"
+IST = ZoneInfo("Asia/Kolkata")
+
+# Failures an advisor can do something about. Everything else stays on the job.
+ADVISOR_FIXABLE_ERRORS = frozenset(
+    {
+        "INVALID_PASSWORD",
+        "MISSING_PASSWORD",
+        "INVALID_USER_ID",
+        "OTP_REQUIRED",
+        "CAPTCHA_REQUIRED",
+        "DUAL_LOGIN",
+    }
+)
+
+_FIXABLE_COPY = {
+    "INVALID_PASSWORD": (
+        "The Income Tax portal rejected the saved password.",
+        "Share the updated portal password with the team so it can be saved before the next run.",
+    ),
+    "MISSING_PASSWORD": (
+        "No Income Tax portal password is saved for this client.",
+        "Share the portal password with the team so it can be saved before the next run.",
+    ),
+    "INVALID_USER_ID": (
+        "The portal rejected the PAN used as the login id.",
+        "Check the PAN on the client profile. The saved password was not changed.",
+    ),
+    "OTP_REQUIRED": (
+        "The portal asked for an OTP, and nobody is available to enter it on the overnight run.",
+        "Ask the client to turn off OTP login, or run this check with them during the day.",
+    ),
+    "CAPTCHA_REQUIRED": (
+        "The portal asked for a CAPTCHA.",
+        "Run this check manually while someone can complete the CAPTCHA.",
+    ),
+    "DUAL_LOGIN": (
+        "Someone else was already logged in to this PAN, so the check could not take over the session.",
+        "Ask the client not to stay logged in to the portal. The next scheduled run will try again.",
+    ),
+}
+
+_SOURCE_LABEL = {
+    "e_proceedings": "e-Proceedings",
+    "outstanding_demand": "outstanding demand",
+}
+_SOURCE_CADENCE = {
+    "e_proceedings": "weekly",
+    "outstanding_demand": "monthly",
+}
+
+
+def notice_needs_action(notice: Mapping[str, Any]) -> bool:
+    """Response still pending. Pending Payment after a filed response does not count."""
+    source = (notice.get("source") or "").strip()
+    if source == "outstanding_demand" or "is_extinguished" in notice:
+        if notice.get("is_extinguished"):
+            return False
+        actions = notice.get("actions") or {}
+        return bool(actions.get("submit_response"))
+    return bool(notice.get("has_submit_response"))
+
+
+def actionable_notices(notices: list[Mapping[str, Any]] | None) -> list[Mapping[str, Any]]:
+    return [notice for notice in notices or [] if notice_needs_action(notice)]
+
+
+def mask_pan(pan: Optional[str]) -> str:
+    raw = (pan or "").strip().upper()
+    if len(raw) < 6:
+        return raw or "—"
+    return f"{raw[:5]}****{raw[-1]}"
+
+
+def client_display_name(client) -> str:
+    name = f"{getattr(client, 'first_name', '') or ''} {getattr(client, 'last_name', '') or ''}".strip()
+    return name or "Unnamed client"
+
+
+def _source_label(source: str) -> str:
+    return _SOURCE_LABEL.get(source, source or "notices")
+
+
+def _due_phrase(iso: Optional[str], today: date) -> str:
+    if not iso:
+        return "due date unknown"
+    try:
+        due = date.fromisoformat(str(iso)[:10])
+    except ValueError:
+        return "due date unknown"
+    shown = due.strftime("%d-%b-%Y")
+    delta = (due - today).days
+    if delta > 1:
+        return f"{shown} ({delta} days left)"
+    if delta == 1:
+        return f"{shown} (1 day left)"
+    if delta == 0:
+        return f"{shown} (due today)"
+    overdue = -delta
+    unit = "day" if overdue == 1 else "days"
+    return f"{shown} (overdue {overdue} {unit})"
+
+
+def _inr(amount: Any) -> str:
+    if amount is None:
+        return "—"
+    return format_inr(amount)
+
+
+def _proceeding_line(notice: Mapping[str, Any], today: date) -> str:
+    section = notice.get("notice_section") or "notice"
+    name = notice.get("proceeding_name") or "e-Proceedings"
+    ay = notice.get("assessment_year") or "—"
+    din = notice.get("din") or "—"
+    issued = notice.get("issued_on") or "—"
+    due = _due_phrase(notice.get("response_due_date"), today)
+    summary = notice.get("summary") or "Submit Response pending"
+    return (
+        f"- {name} · AY {ay} · u/s {section}\n"
+        f"  DIN {din} · issued {issued} · response due {due}\n"
+        f"  {summary}"
+    )
+
+
+def _demand_line(notice: Mapping[str, Any]) -> str:
+    ay = notice.get("assessment_year") or "—"
+    section = notice.get("notice_section") or "—"
+    din = notice.get("din") or "—"
+    interest = notice.get("accrued_interest")
+    if interest is None:
+        interest = notice.get("final_interest")
+    raised = notice.get("date_of_demand_raised") or "—"
+    rights = notice.get("rectification_rights") or "—"
+    summary = notice.get("summary") or "Submit Response pending"
+    return (
+        f"- AY {ay} · u/s {section} · DIN {din}\n"
+        f"  Outstanding {_inr(notice.get('outstanding_demand_amount'))}"
+        f" · interest {_inr(interest)} · raised {raised}\n"
+        f"  Rectification rights: {rights}\n"
+        f"  {summary}"
+    )
+
+
+def render_action_required_email(
+    *,
+    client_name: str,
+    pan: Optional[str],
+    source: str,
+    notices: list[Mapping[str, Any]],
+    advisor_first_name: Optional[str] = None,
+    checked_at: Optional[datetime] = None,
+) -> tuple[str, str, str]:
+    today = (checked_at.astimezone(IST).date() if checked_at else datetime.now(IST).date())
+    label = _source_label(source)
+    count = len(notices)
+    noun = "notice" if count == 1 else "notices"
+    if source == "outstanding_demand":
+        noun = "demand" if count == 1 else "demands"
+    subject = f"Action required: {client_name} — {count} {label} {noun} pending response"
+    greeting = f"Hi {advisor_first_name}," if (advisor_first_name or "").strip() else "Hi,"
+    when = (
+        checked_at.astimezone(IST).strftime("%d-%b-%Y %H:%M IST")
+        if checked_at
+        else "just now"
+    )
+    if source == "outstanding_demand":
+        lines = [_demand_line(notice) for notice in notices]
+        what = f"{count} outstanding {noun} with no response filed"
+    else:
+        lines = [_proceeding_line(notice, today) for notice in notices]
+        what = f"{count} {noun} pending response"
+    cadence = _SOURCE_CADENCE.get(source, "scheduled")
+    text = (
+        f"{greeting}\n\n"
+        f"The {cadence} Income Tax portal check for {client_name} "
+        f"(PAN {mask_pan(pan)}) found {what}.\n\n"
+        + "\n".join(lines)
+        + f"\n\nChecked on {when}. This is sent again on each run while a response is still pending.\n"
+    )
+    items = "".join(f"<li>{escape(line)}</li>" for line in lines)
+    html = (
+        f"<p>{escape(greeting)}</p>"
+        f"<p>The {escape(cadence)} Income Tax portal check for <strong>{escape(client_name)}</strong> "
+        f"(PAN {escape(mask_pan(pan))}) found {escape(what)}.</p>"
+        f"<ul>{items}</ul>"
+        f"<p>Checked on {escape(when)}. This is sent again on each run while a response is still pending.</p>"
+    )
+    return subject, text, html
+
+
+def render_check_failed_email(
+    *,
+    client_name: str,
+    pan: Optional[str],
+    source: str,
+    error_code: str,
+    advisor_first_name: Optional[str] = None,
+) -> tuple[str, str, str]:
+    reason, action = _FIXABLE_COPY[error_code]
+    label = _source_label(source)
+    cadence = _SOURCE_CADENCE.get(source, "scheduled")
+    short = {
+        "INVALID_PASSWORD": "portal password rejected",
+        "MISSING_PASSWORD": "no portal password saved",
+        "INVALID_USER_ID": "portal rejected the PAN",
+        "OTP_REQUIRED": "portal asked for an OTP",
+        "CAPTCHA_REQUIRED": "portal asked for a CAPTCHA",
+        "DUAL_LOGIN": "someone else was logged in",
+    }[error_code]
+    subject = f"Couldn't check {label}: {client_name} — {short}"
+    greeting = f"Hi {advisor_first_name}," if (advisor_first_name or "").strip() else "Hi,"
+    text = (
+        f"{greeting}\n\n"
+        f"We couldn't run the {cadence} {label} check for {client_name} "
+        f"(PAN {mask_pan(pan)}).\n\n"
+        f"Reason: {reason}\n"
+        f"What to do: {action}\n\n"
+        "Any notices from the last successful check are unchanged.\n"
+    )
+    html = (
+        f"<p>{escape(greeting)}</p>"
+        f"<p>We couldn't run the {escape(cadence)} <strong>{escape(label)}</strong> check for "
+        f"<strong>{escape(client_name)}</strong> (PAN {escape(mask_pan(pan))}).</p>"
+        f"<p><strong>Reason:</strong> {escape(reason)}<br>"
+        f"<strong>What to do:</strong> {escape(action)}</p>"
+        "<p>Any notices from the last successful check are unchanged.</p>"
+    )
+    return subject, text, html
