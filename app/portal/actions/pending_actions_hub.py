@@ -21,6 +21,9 @@ PENDING_ACTIONS_FALLBACK = (
 E_PROCEEDINGS_MENU_SELECTOR = (
     'button.mat-mdc-menu-item:has-text("e-Proceedings")'
 )
+# Proven on the open Pending Actions dropdown (overlay panel
+# ``loggedin-menu-level-one``): a ``button.mat-mdc-menu-item`` whose label is
+# exactly "Response to Outstanding Demand", next to Worklist and e-Proceedings.
 OUTSTANDING_DEMAND_MENU_SELECTOR = (
     'button.mat-mdc-menu-item:has-text("Response to Outstanding Demand")'
 )
