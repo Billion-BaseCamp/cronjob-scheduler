@@ -1,7 +1,7 @@
-"""Shared shell: login → harvest selected pending-action notice sources → logout.
+"""Shared shell: login → harvest one pending-action notice source → logout.
 
-Sources: ``e_proceedings`` and ``outstanding_demand``. Compliance portal plugs
-into ``SOURCES`` later without changing the registry entry shape.
+Each source is its own workflow so they can be scheduled independently
+(e-Proceedings runs in bulk far more often than outstanding demand).
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from app.portal.actions.read_e_proceedings_notices import (
 from app.portal.actions.read_outstanding_demand import read_outstanding_demand
 from app.portal.evidence import upload_screenshot
 from app.portal.evidence_step import (
-    EVIDENCE_E_PROCEEDINGS,
     EVIDENCE_LOGIN,
     primary_notices_evidence_step,
 )
@@ -37,8 +36,6 @@ HarvestFn = Callable[[Any], Awaitable[NoticeHarvest]]
 SOURCES: dict[str, HarvestFn] = {
     "e_proceedings": read_e_proceedings_notices,
     "outstanding_demand": read_outstanding_demand,
-    # Phase 3:
-    # "compliance_portal": read_compliance_portal_notices,
 }
 
 
@@ -224,20 +221,12 @@ def _apply_login_outcome(job, client, outcome: LoginOutcome) -> bool:
     return False
 
 
-def _harvest_as_source_result(harvest: NoticeHarvest) -> dict[str, Any]:
-    return {
-        "ok": harvest.ok,
-        "notices": harvest.notices,
-        "error": harvest.error,
-    }
-
-
 async def run_pending_actions_notices_job(
     db,
     job,
     *,
     workflow: str,
-    sources: tuple[str, ...],
+    source: str,
 ) -> None:
     client = await get_client(db, job.client_id)
     if client is None:
@@ -245,14 +234,15 @@ async def run_pending_actions_notices_job(
         _fail(job, error_code="UNKNOWN", message="Client not found")
         return
 
-    unknown = [name for name in sources if name not in SOURCES]
-    if unknown:
+    harvest_fn = SOURCES.get(source)
+    if harvest_fn is None:
         _fail(
             job,
             error_code="UNKNOWN",
-            message=f"Unsupported notice sources: {unknown}",
+            message=f"Unsupported notice source: {source!r}",
         )
         return
+    source_evidence = primary_notices_evidence_step(login_ok=True, source=source)
 
     page = None
     browser = None
@@ -275,83 +265,39 @@ async def run_pending_actions_notices_job(
                 return
 
             job.current_step = STEPS[1]
-            source_results: dict[str, Any] = {}
-            flat_notices: list[dict[str, Any]] = []
-            any_ok = False
-            harvest_errors: list[str] = []
-
-            for name in sources:
-                harvest_fn = SOURCES[name]
-                try:
-                    harvest = await harvest_fn(page)
-                except Exception as exc:
-                    logger.exception("Source %s crashed for job %s", name, job.id)
-                    harvest = NoticeHarvest(
-                        source=name, ok=False, error=f"crashed: {type(exc).__name__}"
-                    )
-                source_results[name] = _harvest_as_source_result(harvest)
-                if harvest.ok:
-                    any_ok = True
-                    flat_notices.extend(harvest.notices)
-                else:
-                    harvest_errors.append(
-                        f"{name}: {harvest.error or 'harvest failed'}"
-                    )
-
-            evidence_step = primary_notices_evidence_step(
-                login_ok=True,
-                harvested_ok=any_ok,
-            )
-            await _attach_evidence(job, page, evidence_step)
+            harvest: NoticeHarvest = await harvest_fn(page)
+            await _attach_evidence(job, page, source_evidence)
 
             job.current_step = STEPS[2]
             logged_out = await run_logout(page)
 
-            if not any_ok and sources:
+            payload = {
+                "workflow": workflow,
+                "source": source,
+                "login_ok": True,
+                "logged_out": logged_out,
+                "scrape_path": harvest.scrape_path,
+                "notice_count": len(harvest.notices) if harvest.ok else 0,
+                "notices": harvest.notices if harvest.ok else [],
+            }
+            if not harvest.ok:
                 _fail(
                     job,
                     error_code="UI_DRIFT",
-                    message="; ".join(harvest_errors)
-                    or "Notice harvest failed for all sources.",
+                    message=f"{source}: {harvest.error or 'harvest failed'}",
                 )
-                _merge_result(
-                    job,
-                    {
-                        "workflow": workflow,
-                        "login_ok": True,
-                        "logged_out": logged_out,
-                        "sources": source_results,
-                        "notice_count": 0,
-                        "notices": [],
-                    },
-                )
+                _merge_result(job, payload)
                 return
 
             job.status = "completed"
             job.error_code = None
-            job.error_message = (
-                "; ".join(harvest_errors) if harvest_errors else None
-            )
+            job.error_message = None
             job.worker_id = None
             job.completed_at = _now()
-            _merge_result(
-                job,
-                {
-                    "workflow": workflow,
-                    "login_ok": True,
-                    "logged_out": logged_out,
-                    "sources": source_results,
-                    "notice_count": len(flat_notices),
-                    "notices": flat_notices,
-                },
-            )
+            _merge_result(job, payload)
         except Exception:
             logger.exception("%s crashed for job %s", workflow, job.id)
-            step = job.current_step or EVIDENCE_LOGIN
-            if step == STEPS[1]:
-                step = EVIDENCE_E_PROCEEDINGS
-            elif step not in {EVIDENCE_LOGIN, EVIDENCE_E_PROCEEDINGS}:
-                step = EVIDENCE_LOGIN
+            step = source_evidence if job.current_step == STEPS[1] else EVIDENCE_LOGIN
             await _attach_evidence(job, page, step)
             _fail(
                 job,

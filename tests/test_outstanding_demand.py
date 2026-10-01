@@ -13,6 +13,7 @@ from app.portal.actions.read_outstanding_demand import (
     merge_demands,
     parse_rupee_amount,
 )
+from app.portal.evidence_step import primary_notices_evidence_step
 from app.portal.notice_diagnosis import diagnose_notice, format_inr
 
 PAN = "ABCDE1234F"
@@ -336,6 +337,16 @@ def test_demands_from_api_payload_empty_and_bad() -> None:
     assert demands_from_api_payload({"demandList": []}) == []
     assert demands_from_api_payload({"messages": []}) == []
     assert demands_from_api_payload(None) == []
+
+
+def test_evidence_step_per_source() -> None:
+    assert primary_notices_evidence_step(login_ok=True, source="outstanding_demand") == (
+        "OUTSTANDING_DEMAND"
+    )
+    assert primary_notices_evidence_step(login_ok=True, source="e_proceedings") == (
+        "E_PROCEEDINGS"
+    )
+    assert primary_notices_evidence_step(login_ok=False, source="e_proceedings") == "LOGIN"
 
 
 def test_format_inr() -> None:
