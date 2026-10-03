@@ -159,15 +159,16 @@ async def save_notice_snapshot(
         }
 
     stmt = insert(ClientNotice).values(**values)
+    # WHERE belongs on ON CONFLICT DO UPDATE. Insert has no .where().
+    # A slower older run must not replace a harvest that already finished.
+    where = None
+    if not error_code:
+        where = (ClientNotice.fetched_at.is_(None)) | (ClientNotice.fetched_at < now)
     upsert = stmt.on_conflict_do_update(
         constraint="uq_client_notices_client_source",
         set_=update,
+        where=where,
     )
-    if not error_code:
-        # A slower older run must not replace a harvest that already finished.
-        upsert = upsert.where(
-            (ClientNotice.fetched_at.is_(None)) | (ClientNotice.fetched_at < now)
-        )
     await db.execute(upsert)
 
 
