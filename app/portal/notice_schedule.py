@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Iterable, Mapping, Optional
 from uuid import UUID
 
@@ -59,8 +59,13 @@ def notice_assessment_year(today: date) -> str:
 
 
 def weekly_should_skip(today: date) -> bool:
-    """On the 28th the monthly run owns the night, even when it is a Monday."""
-    return today.day == E_PROCEEDINGS_MONTHLY_DAY
+    """Skip on the 28th and on the Monday right after a Sunday 28th.
+
+    The monthly run owns the 28th. The next night it has just checked the same
+    clients, so a weekly run would only repeat the advisor emails.
+    """
+    yesterday = today - timedelta(days=1)
+    return E_PROCEEDINGS_MONTHLY_DAY in (today.day, yesterday.day)
 
 
 @dataclass(frozen=True)

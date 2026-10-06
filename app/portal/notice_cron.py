@@ -288,7 +288,9 @@ async def start_scheduled_run(
     today = today or now.astimezone(IST).date()
 
     if run_type == RUN_E_PROCEEDINGS_WEEKLY and not manual and weekly_should_skip(today):
-        return StartResult(False, reason="The monthly run owns the 28th; weekly skipped.")
+        return StartResult(
+            False, reason="The monthly run owns the 28th and the night after; weekly skipped."
+        )
 
     client_model, watch_model, batch_model, job_model = _models()
     requested_by = CRON_REQUESTED_BY if send_email else CRON_SILENT_REQUESTED_BY
