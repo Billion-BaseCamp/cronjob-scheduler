@@ -26,11 +26,21 @@ def test_assessment_year_label_follows_the_financial_year() -> None:
     assert notice_assessment_year(date(2099, 12, 1)) == "2099-00"
 
 
-def test_weekly_is_skipped_only_on_the_28th() -> None:
+def test_weekly_is_skipped_on_a_monday_28th() -> None:
     assert date(2026, 9, 28).weekday() == 0
     assert weekly_should_skip(date(2026, 9, 28)) is True
     assert weekly_should_skip(date(2026, 10, 5)) is False
     assert weekly_should_skip(date(2026, 10, 27)) is False
+
+
+def test_weekly_is_skipped_the_monday_after_a_sunday_28th() -> None:
+    # 28 Feb 2027 and 28 Mar 2027 are Sundays.
+    assert date(2027, 3, 1).weekday() == 0
+    assert weekly_should_skip(date(2027, 3, 1)) is True
+    assert date(2027, 3, 29).weekday() == 0
+    assert weekly_should_skip(date(2027, 3, 29)) is True
+    assert weekly_should_skip(date(2027, 3, 8)) is False
+    assert weekly_should_skip(date(2027, 4, 5)) is False
 
 
 def test_waiting_jobs_count_as_settled_but_queued_and_running_do_not() -> None:

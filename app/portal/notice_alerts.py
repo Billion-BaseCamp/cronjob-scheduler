@@ -1,7 +1,7 @@
 """Which harvested notices need an advisor, and the email copy for that.
 
-Sent only for cron-run jobs. Technical failures (portal UI drift, crashes)
-are recorded on the job and are not emailed.
+Sent only for cron-run jobs that found notices needing action. Login and
+technical failures are recorded on the job and are not emailed.
 """
 
 from __future__ import annotations
@@ -18,7 +18,8 @@ CRON_REQUESTED_BY = "cron"
 CRON_SILENT_REQUESTED_BY = "cron-silent"
 IST = ZoneInfo("Asia/Kolkata")
 
-# Failures an advisor can do something about. Everything else stays on the job.
+# Failures caused by the client's portal login, not by the run. A monthly run
+# leaves them out of its success ratio.
 ADVISOR_FIXABLE_ERRORS = frozenset(
     {
         "INVALID_PASSWORD",
@@ -29,33 +30,6 @@ ADVISOR_FIXABLE_ERRORS = frozenset(
         "DUAL_LOGIN",
     }
 )
-
-_FIXABLE_COPY = {
-    "INVALID_PASSWORD": (
-        "The Income Tax portal rejected the saved password.",
-        "Share the updated portal password with the team so it can be saved before the next run.",
-    ),
-    "MISSING_PASSWORD": (
-        "No Income Tax portal password is saved for this client.",
-        "Share the portal password with the team so it can be saved before the next run.",
-    ),
-    "INVALID_USER_ID": (
-        "The portal rejected the PAN used as the login id.",
-        "Check the PAN on the client profile. The saved password was not changed.",
-    ),
-    "OTP_REQUIRED": (
-        "The portal asked for an OTP, and nobody is available to enter it on the overnight run.",
-        "Ask the client to turn off OTP login, or run this check with them during the day.",
-    ),
-    "CAPTCHA_REQUIRED": (
-        "The portal asked for a CAPTCHA.",
-        "Run this check manually while someone can complete the CAPTCHA.",
-    ),
-    "DUAL_LOGIN": (
-        "Someone else was already logged in to this PAN, so the check could not take over the session.",
-        "Ask the client not to stay logged in to the portal. The next scheduled run will try again.",
-    ),
-}
 
 _SOURCE_LABEL = {
     "e_proceedings": "e-Proceedings",
@@ -201,45 +175,5 @@ def render_action_required_email(
         f"(PAN {escape(mask_pan(pan))}) found {escape(what)}.</p>"
         f"<ul>{items}</ul>"
         f"<p>Checked on {escape(when)}. This is sent again on each run while a response is still pending.</p>"
-    )
-    return subject, text, html
-
-
-def render_check_failed_email(
-    *,
-    client_name: str,
-    pan: Optional[str],
-    source: str,
-    error_code: str,
-    advisor_first_name: Optional[str] = None,
-) -> tuple[str, str, str]:
-    reason, action = _FIXABLE_COPY[error_code]
-    label = _source_label(source)
-    cadence = _SOURCE_CADENCE.get(source, "scheduled")
-    short = {
-        "INVALID_PASSWORD": "portal password rejected",
-        "MISSING_PASSWORD": "no portal password saved",
-        "INVALID_USER_ID": "portal rejected the PAN",
-        "OTP_REQUIRED": "portal asked for an OTP",
-        "CAPTCHA_REQUIRED": "portal asked for a CAPTCHA",
-        "DUAL_LOGIN": "someone else was logged in",
-    }[error_code]
-    subject = f"Couldn't check {label}: {client_name} — {short}"
-    greeting = f"Hi {advisor_first_name}," if (advisor_first_name or "").strip() else "Hi,"
-    text = (
-        f"{greeting}\n\n"
-        f"We couldn't run the {cadence} {label} check for {client_name} "
-        f"(PAN {mask_pan(pan)}).\n\n"
-        f"Reason: {reason}\n"
-        f"What to do: {action}\n\n"
-        "Any notices from the last successful check are unchanged.\n"
-    )
-    html = (
-        f"<p>{escape(greeting)}</p>"
-        f"<p>We couldn't run the {escape(cadence)} <strong>{escape(label)}</strong> check for "
-        f"<strong>{escape(client_name)}</strong> (PAN {escape(mask_pan(pan))}).</p>"
-        f"<p><strong>Reason:</strong> {escape(reason)}<br>"
-        f"<strong>What to do:</strong> {escape(action)}</p>"
-        "<p>Any notices from the last successful check are unchanged.</p>"
     )
     return subject, text, html

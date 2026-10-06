@@ -4,7 +4,9 @@ The table is one row per client + source. Success replaces that source only.
 Failure updates the last-attempt columns and leaves the previous notices.
 
 Email goes out only when the job was queued by the cron (``requested_by_sub``
-is ``cron``). A send failure never fails the job.
+is ``cron``), completed, and found notices needing action. Login problems are
+not emailed: an empty ``clients.it_portal_pass`` already marks the client as
+needing a password. A send failure never fails the job.
 """
 
 from __future__ import annotations
@@ -16,19 +18,13 @@ from typing import Any, Optional
 from sqlalchemy.dialects.postgresql import insert
 
 from app.portal.notice_alerts import (
-    ADVISOR_FIXABLE_ERRORS,
     CRON_REQUESTED_BY,
     actionable_notices,
     client_display_name,
     render_action_required_email,
-    render_check_failed_email,
 )
 
 logger = logging.getLogger(__name__)
-
-_ALERT_STATUSES = frozenset(
-    {"completed", "failed", "waiting_for_password", "waiting_for_otp", "waiting_for_human"}
-)
 
 
 def _now() -> datetime:
@@ -199,12 +195,10 @@ async def record_notice_outcome(
 
     if (getattr(job, "requested_by_sub", None) or "") != CRON_REQUESTED_BY:
         return
-    if (getattr(job, "status", None) or "") not in _ALERT_STATUSES:
+    if error_code or (getattr(job, "status", None) or "") != "completed":
         return
-
-    pending = actionable_notices(notices) if not error_code else []
-    fixable = error_code in ADVISOR_FIXABLE_ERRORS
-    if not pending and not fixable:
+    pending = actionable_notices(notices)
+    if not pending:
         return
 
     try:
@@ -218,25 +212,14 @@ async def record_notice_outcome(
         _stamp_alert(job, alert_error="no advisor email")
         return
 
-    name = client_display_name(client)
-    pan = getattr(client, "pan_number", None)
-    if pending:
-        subject, text, html = render_action_required_email(
-            client_name=name,
-            pan=pan,
-            source=source,
-            notices=pending,
-            advisor_first_name=first_name,
-            checked_at=_now(),
-        )
-    else:
-        subject, text, html = render_check_failed_email(
-            client_name=name,
-            pan=pan,
-            source=source,
-            error_code=error_code or "",
-            advisor_first_name=first_name,
-        )
+    subject, text, html = render_action_required_email(
+        client_name=client_display_name(client),
+        pan=getattr(client, "pan_number", None),
+        source=source,
+        notices=pending,
+        advisor_first_name=first_name,
+        checked_at=_now(),
+    )
     sent = await _send(email, subject, text, html)
     if sent:
         _stamp_alert(job, alert_emailed_at=_now().isoformat(), alert_error=None)

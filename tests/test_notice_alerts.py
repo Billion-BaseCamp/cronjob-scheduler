@@ -10,7 +10,6 @@ from app.portal.notice_alerts import (
     mask_pan,
     notice_needs_action,
     render_action_required_email,
-    render_check_failed_email,
 )
 
 
@@ -87,20 +86,6 @@ def test_action_email_names_the_client_and_due_date() -> None:
     assert "05-Oct-2026" in text
     assert "Priya" in text
     assert "password" not in text.lower()
-
-
-def test_failure_email_asks_the_team_to_save_the_password() -> None:
-    subject, text, _html = render_check_failed_email(
-        client_name="Rahul Sharma",
-        pan="ABCDE1234F",
-        source="outstanding_demand",
-        error_code="INVALID_PASSWORD",
-        advisor_first_name="Priya",
-    )
-    assert "Rahul Sharma" in subject
-    assert "password" in subject
-    assert "Share the updated portal password with the team" in text
-    assert "client profile" not in text.lower()
 
 
 def test_technical_failures_are_not_advisor_mail() -> None:

@@ -56,6 +56,7 @@ def _client_notice_model(monkeypatch):
     yield
 
 
+from app.portal import notice_snapshot  # noqa: E402
 from app.portal.notice_snapshot import save_notice_snapshot  # noqa: E402
 
 
@@ -107,3 +108,82 @@ def test_failure_upsert_always_updates_the_attempt() -> None:
     sql = _sql(db.stmt)
     assert "ON CONFLICT ON CONSTRAINT uq_client_notices_client_source" in sql
     assert "WHERE" not in sql
+
+
+@pytest.fixture
+def sent(monkeypatch) -> list[str]:
+    subjects: list[str] = []
+
+    async def advisor_email(db, client):
+        return "advisor@example.com", "Priya"
+
+    async def send(to_email, subject, text, html):
+        subjects.append(subject)
+        return True
+
+    monkeypatch.setattr(notice_snapshot, "_advisor_email", advisor_email)
+    monkeypatch.setattr(notice_snapshot, "_send", send)
+    return subjects
+
+
+def _job(status: str, requested_by: str = "cron"):
+    return types.SimpleNamespace(
+        id=uuid4(),
+        client_id=uuid4(),
+        status=status,
+        requested_by_sub=requested_by,
+        started_at=datetime(2026, 10, 3, tzinfo=timezone.utc),
+        result={},
+    )
+
+
+_CLIENT = types.SimpleNamespace(first_name="Rahul", last_name="Sharma", pan_number="ABCDE1234F")
+_PENDING = [{"source": "e_proceedings", "has_submit_response": True, "din": "1"}]
+
+
+def test_pending_notices_send_the_action_required_email(sent) -> None:
+    job = _job("completed")
+    asyncio.run(
+        notice_snapshot.record_notice_outcome(
+            _Capture(), job, _CLIENT, "e_proceedings", notices=_PENDING
+        )
+    )
+    assert len(sent) == 1
+    assert sent[0].startswith("Action required: Rahul Sharma")
+    assert "alert_emailed_at" in job.result
+
+
+@pytest.mark.parametrize(
+    "status, code",
+    [
+        ("failed", "INVALID_PASSWORD"),
+        ("waiting_for_password", "MISSING_PASSWORD"),
+        ("waiting_for_otp", "OTP_REQUIRED"),
+        ("failed", "DUAL_LOGIN"),
+        ("failed", "UI_DRIFT"),
+    ],
+)
+def test_login_and_technical_failures_send_no_email(sent, status, code) -> None:
+    asyncio.run(
+        notice_snapshot.record_notice_outcome(
+            _Capture(), _job(status), _CLIENT, "e_proceedings",
+            error_code=code, error_message="x",
+        )
+    )
+    assert sent == []
+
+
+def test_no_email_without_pending_notices_or_outside_cron(sent) -> None:
+    done = [{"source": "e_proceedings", "has_submit_response": False, "din": "2"}]
+    asyncio.run(
+        notice_snapshot.record_notice_outcome(
+            _Capture(), _job("completed"), _CLIENT, "e_proceedings", notices=done
+        )
+    )
+    asyncio.run(
+        notice_snapshot.record_notice_outcome(
+            _Capture(), _job("completed", "cron-silent"), _CLIENT, "e_proceedings",
+            notices=_PENDING,
+        )
+    )
+    assert sent == []
