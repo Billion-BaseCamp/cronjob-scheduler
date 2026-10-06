@@ -121,6 +121,31 @@ class Settings:
     PORTAL_AUTOMATION_SWEEP_INTERVAL_SECONDS: int = _env_int(
         "PORTAL_AUTOMATION_SWEEP_INTERVAL_SECONDS", 60
     )
+    # Scheduled notice runs. Off by default; turn on after a monthly run started
+    # by hand has built the first weekly list.
+    E_PROCEEDINGS_MONTHLY_CRON_ENABLED: bool = _env_flag(
+        "E_PROCEEDINGS_MONTHLY_CRON_ENABLED", "false"
+    )
+    E_PROCEEDINGS_WEEKLY_CRON_ENABLED: bool = _env_flag(
+        "E_PROCEEDINGS_WEEKLY_CRON_ENABLED", "false"
+    )
+    OUTSTANDING_DEMAND_CRON_ENABLED: bool = _env_flag(
+        "OUTSTANDING_DEMAND_CRON_ENABLED", "false"
+    )
+    # Completes running scheduled batches. Needed for runs started by hand too.
+    NOTICE_BATCH_FINALIZER_ENABLED: bool = _env_flag(
+        "NOTICE_BATCH_FINALIZER_ENABLED", "true"
+    )
+    NOTICE_BATCH_FINALIZER_MINUTES: int = max(
+        1, _env_int("NOTICE_BATCH_FINALIZER_MINUTES", 5)
+    )
+    NOTICE_BATCH_DEADLINE_HOURS: int = max(
+        1, _env_int("NOTICE_BATCH_DEADLINE_HOURS", 30)
+    )
+    E_PROCEEDINGS_MONTHLY_MIN_SUCCESS_RATIO: float = _env_float(
+        "E_PROCEEDINGS_MONTHLY_MIN_SUCCESS_RATIO", "0.8"
+    )
+
     S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")
     S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "ap-south-1"))
 

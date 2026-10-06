@@ -24,6 +24,7 @@ from app.portal.evidence_step import (
     EVIDENCE_LOGIN,
     primary_notices_evidence_step,
 )
+from app.portal.notice_alerts import actionable_notices
 from app.portal.notice_snapshot import record_notice_outcome
 from app.portal.store import get_client
 
@@ -287,6 +288,9 @@ async def run_pending_actions_notices_job(
                 "logged_out": logged_out,
                 "scrape_path": harvest.scrape_path,
                 "notice_count": len(harvest.notices) if harvest.ok else 0,
+                "action_required_count": (
+                    len(actionable_notices(harvest.notices)) if harvest.ok else 0
+                ),
                 "notices": harvest.notices if harvest.ok else [],
             }
             if not harvest.ok:

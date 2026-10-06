@@ -16,6 +16,7 @@ from app.jobs.financial_year_job import (
     start_scheduler,
     stop_scheduler,
 )
+from app.jobs.notice_cron_job import setup_notice_cron_jobs
 from app.jobs.quarter_transition_job import setup_quarter_transition_job
 from app.portal.worker.loop import WORKER_ID, run_forever
 from app.portal.worker.status import poller_status
@@ -130,6 +131,7 @@ async def lifespan(app: FastAPI):
         await setup_financial_year_job()
         await setup_quarter_transition_job()
         await setup_birthday_reminder_job()
+        await setup_notice_cron_jobs()
         start_scheduler()
         logger.success("Cron scheduler started")
         await _start_aa_worker(app)

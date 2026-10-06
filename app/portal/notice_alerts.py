@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 from app.portal.notice_diagnosis import format_inr
 
 CRON_REQUESTED_BY = "cron"
+# Scheduled jobs started by hand with --no-email. Queued like cron, never emailed.
+CRON_SILENT_REQUESTED_BY = "cron-silent"
 IST = ZoneInfo("Asia/Kolkata")
 
 # Failures an advisor can do something about. Everything else stays on the job.

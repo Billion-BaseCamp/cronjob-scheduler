@@ -43,18 +43,18 @@ class _ClientNotice(_Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
-def _install_model() -> None:
-    for name in (
-        "nucleus",
-        "nucleus.models",
-        "nucleus.models.portal_automation",
-        "nucleus.models.portal_automation.client_notice",
-    ):
-        sys.modules.setdefault(name, types.ModuleType(name))
-    sys.modules["nucleus.models.portal_automation.client_notice"].ClientNotice = _ClientNotice
+@pytest.fixture(autouse=True)
+def _client_notice_model(monkeypatch):
+    """Point the lazy import at a local table; restored after each test."""
+    try:
+        import nucleus.models  # noqa: F401  load the real package before stubbing
+    except Exception:
+        pass
+    module = types.ModuleType("nucleus.models.portal_automation.client_notice")
+    module.ClientNotice = _ClientNotice
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    yield
 
-
-_install_model()
 
 from app.portal.notice_snapshot import save_notice_snapshot  # noqa: E402
 
