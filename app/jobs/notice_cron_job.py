@@ -96,6 +96,12 @@ async def setup_notice_cron_jobs() -> None:
         )
         return
 
+    if settings.NOTICE_CRON_CLIENT_IDS is not None:
+        logger.warning(
+            f"Notice runs limited to {len(settings.NOTICE_CRON_CLIENT_IDS)} client(s) "
+            "by NOTICE_CRON_CLIENT_IDS. Leave it empty in production."
+        )
+
     if settings.E_PROCEEDINGS_MONTHLY_CRON_ENABLED:
         _add_cron(
             RUN_E_PROCEEDINGS_MONTHLY,
@@ -144,6 +150,9 @@ async def _cli(command: str, send_email: bool) -> int:
             return 0
         result = await start_scheduled_run(command, manual=True, send_email=send_email)
         if result.started:
+            allowlist = settings.NOTICE_CRON_CLIENT_IDS
+            if allowlist is not None:
+                print(f"Limited to {len(allowlist)} client(s) by NOTICE_CRON_CLIENT_IDS.")
             print(f"Started batch {result.batch_id} with {result.enqueued} job(s).")
             return 0
         print(f"Not started: {result.reason}")

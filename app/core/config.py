@@ -1,4 +1,7 @@
 import os
+from typing import Optional
+from uuid import UUID
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,6 +38,24 @@ def _env_float(name: str, default: str) -> float:
         return float(raw)
     except ValueError:
         return float(default)
+
+
+def parse_uuid_list(raw: Optional[str]) -> Optional[tuple[UUID, ...]]:
+    """None when blank. Malformed entries are dropped, never widening to "all".
+
+    A value that is set but has no valid UUID gives an empty tuple, so a typo
+    on staging checks nobody instead of every client.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    ids: list[UUID] = []
+    for part in raw.split(","):
+        try:
+            ids.append(UUID(part.strip()))
+        except ValueError:
+            continue
+    return tuple(dict.fromkeys(ids))
 
 
 class Settings:
@@ -144,6 +165,11 @@ class Settings:
     )
     E_PROCEEDINGS_MONTHLY_MIN_SUCCESS_RATIO: float = _env_float(
         "E_PROCEEDINGS_MONTHLY_MIN_SUCCESS_RATIO", "0.8"
+    )
+    # Staging only: limit scheduled notice runs to these client ids. Keep empty
+    # in production; a limited monthly run would become the weekly list.
+    NOTICE_CRON_CLIENT_IDS: Optional[tuple[UUID, ...]] = parse_uuid_list(
+        os.getenv("NOTICE_CRON_CLIENT_IDS")
     )
 
     S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")

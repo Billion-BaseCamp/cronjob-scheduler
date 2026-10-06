@@ -86,6 +86,20 @@ def _active_client(client_model):
     return or_(client_model.is_active.is_(None), client_model.is_active.is_(True))
 
 
+def _limit_to_allowlist(stmt, client_model):
+    allowlist = settings.NOTICE_CRON_CLIENT_IDS
+    if allowlist is None:
+        return stmt
+    return stmt.where(client_model.id.in_(allowlist))
+
+
+def _scope_summary() -> dict[str, Any]:
+    allowlist = settings.NOTICE_CRON_CLIENT_IDS
+    if allowlist is None:
+        return {"scope": "all"}
+    return {"scope": "allowlist", "allowlist_size": len(allowlist)}
+
+
 async def _running_batch(db, batch_model, workflow: str):
     stmt = (
         select(batch_model)
@@ -131,6 +145,7 @@ async def _all_eligible_clients(db, client_model) -> list[UUID]:
         client_model.pan_number.isnot(None),
         func.btrim(client_model.pan_number) != "",
     )
+    stmt = _limit_to_allowlist(stmt, client_model)
     return list((await db.execute(stmt)).scalars().all())
 
 
@@ -170,6 +185,7 @@ async def _weekly_clients(db, client_model, watch_model, batch_model) -> list[UU
     stmt = select(client_model.id).where(
         client_model.id.in_(ids), _active_client(client_model)
     )
+    stmt = _limit_to_allowlist(stmt, client_model)
     return list((await db.execute(stmt)).scalars().all())
 
 
@@ -276,6 +292,7 @@ async def start_scheduled_run(
         else:
             client_ids = await _all_eligible_clients(db, client_model)
 
+        scope = _scope_summary()
         batch_id = uuid4()
         db.add(
             batch_model(
@@ -287,7 +304,7 @@ async def start_scheduled_run(
                 run_type=run_type,
                 status="running",
                 started_at=now,
-                summary={"eligible": len(client_ids)},
+                summary={**scope, "eligible": len(client_ids)},
             )
         )
         try:
@@ -311,6 +328,7 @@ async def start_scheduled_run(
             )
             batch = await db.get(batch_model, batch_id)
             batch.summary = {
+                **scope,
                 "eligible": len(client_ids),
                 "enqueued": queued,
                 "skipped_active": len(client_ids) - queued,
