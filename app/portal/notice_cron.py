@@ -137,16 +137,40 @@ async def _fail_batch(db, job_model, batch, reason: str, now: datetime) -> None:
     batch.summary = {**(batch.summary or {}), "cancelled_queued": cancelled}
 
 
-async def _all_eligible_clients(db, client_model) -> list[UUID]:
-    stmt = select(client_model.id).where(
-        _active_client(client_model),
-        client_model.it_portal_pass.isnot(None),
-        func.btrim(client_model.it_portal_pass) != "",
+def _has_pan(client_model):
+    return (
         client_model.pan_number.isnot(None),
         func.btrim(client_model.pan_number) != "",
     )
+
+
+async def _all_eligible_clients(db, client_model) -> list[UUID]:
+    stmt = select(client_model.id).where(
+        _active_client(client_model),
+        *_has_pan(client_model),
+        client_model.it_portal_pass.isnot(None),
+        func.btrim(client_model.it_portal_pass) != "",
+    )
     stmt = _limit_to_allowlist(stmt, client_model)
     return list((await db.execute(stmt)).scalars().all())
+
+
+async def _count_no_password(db, client_model) -> int:
+    """Clients a monthly run leaves out for lack of a portal password.
+
+    Counted rather than queued: a job would only end as MISSING_PASSWORD and
+    email the advisor every month for clients who never gave a password.
+    """
+    stmt = select(func.count()).select_from(client_model).where(
+        _active_client(client_model),
+        *_has_pan(client_model),
+        or_(
+            client_model.it_portal_pass.is_(None),
+            func.btrim(client_model.it_portal_pass) == "",
+        ),
+    )
+    stmt = _limit_to_allowlist(stmt, client_model)
+    return int((await db.execute(stmt)).scalar_one())
 
 
 async def _latest_completed_monthly(db, batch_model, *, exclude: Optional[UUID] = None):
@@ -287,12 +311,13 @@ async def start_scheduled_run(
                 await db.rollback()
                 return StartResult(False, reason=reason)
 
+        base = _scope_summary()
         if run_type == RUN_E_PROCEEDINGS_WEEKLY:
             client_ids = await _weekly_clients(db, client_model, watch_model, batch_model)
         else:
             client_ids = await _all_eligible_clients(db, client_model)
+            base["skipped_no_password"] = await _count_no_password(db, client_model)
 
-        scope = _scope_summary()
         batch_id = uuid4()
         db.add(
             batch_model(
@@ -304,7 +329,7 @@ async def start_scheduled_run(
                 run_type=run_type,
                 status="running",
                 started_at=now,
-                summary={**scope, "eligible": len(client_ids)},
+                summary={**base, "eligible": len(client_ids)},
             )
         )
         try:
@@ -328,7 +353,7 @@ async def start_scheduled_run(
             )
             batch = await db.get(batch_model, batch_id)
             batch.summary = {
-                **scope,
+                **base,
                 "eligible": len(client_ids),
                 "enqueued": queued,
                 "skipped_active": len(client_ids) - queued,

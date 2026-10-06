@@ -44,6 +44,9 @@ class _Result:
     def first(self):
         return self._values[0] if self._values else None
 
+    def scalar_one(self):
+        return self._values[0]
+
 
 class _FakeDb:
     def __init__(self, *responses):
@@ -85,6 +88,18 @@ def test_monthly_clients_limited_by_allowlist(cron, monkeypatch) -> None:
     asyncio.run(cron._all_eligible_clients(db, client_model))
     assert "clients.id IN" in _sql(db.statements[0])
     assert cron._scope_summary() == {"scope": "allowlist", "allowlist_size": 2}
+
+
+def test_no_password_count_matches_monthly_skip(cron, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "NOTICE_CRON_CLIENT_IDS", (A,))
+    client_model = cron._models()[0]
+    db = _FakeDb([4])
+    assert asyncio.run(cron._count_no_password(db, client_model)) == 4
+    sql = _sql(db.statements[0])
+    assert "count(*)" in sql
+    assert "clients.it_portal_pass IS NULL" in sql
+    assert "btrim(clients.it_portal_pass) =" in sql
+    assert "clients.id IN" in sql
 
 
 def test_weekly_clients_limited_by_allowlist(cron, monkeypatch) -> None:
