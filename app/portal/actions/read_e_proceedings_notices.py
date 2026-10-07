@@ -19,6 +19,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from app.core.config import settings
 from app.portal.actions.pending_actions_hub import (
+    FOR_YOUR_ACTION_TAB,
     back_to_e_proceedings_list,
     open_e_proceedings_for_your_action,
 )
@@ -66,6 +67,16 @@ _UI_DATE_RE = re.compile(
     r"(\d{1,2})[-/\s](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[-/\s,]?(\d{4})",
     re.I,
 )
+
+# Pager under the For your Action list: Items per Page (10 / 25 / 50) and
+# "1 of 1 pages". The tab label carries the proceeding total, e.g. "(8)".
+PAGINATOR_SELECTOR = "mat-paginator#paginator, mat-paginator.mat-mdc-paginator"
+PAGE_SIZE_SELECT = ".mat-mdc-paginator-page-size mat-select"
+PAGE_SIZE_VALUE = ".mat-mdc-select-value-text"
+PAGE_SIZE_OPTION = ".mat-mdc-select-panel mat-option"
+RANGE_LABEL_SELECTOR = ".mat-mdc-paginator-range-label"
+_RANGE_RE = re.compile(r"(\d+)\s+of\s+(\d+)\s+pages?", re.I)
+_TAB_COUNT_RE = re.compile(r"For your Action\s*\(\s*(\d+)\s*\)", re.I)
 
 _PAGE_TIMEOUT_MS = 20_000
 _CARD_TIMEOUT_MS = 12_000
@@ -220,6 +231,38 @@ def notices_from_api_payload(payload: Any) -> list[dict[str, Any]]:
         if isinstance(item, dict) and item.get("documentIdentificationNumber"):
             out.append(map_api_notice(item))
     return out
+
+
+def parse_total_pages(text: str) -> Optional[int]:
+    """``1 of 3 pages`` → 3."""
+    match = _RANGE_RE.search(text or "")
+    return int(match.group(2)) if match else None
+
+
+def parse_for_your_action_count(text: str) -> Optional[int]:
+    """``For your Action (8)`` → 8."""
+    match = _TAB_COUNT_RE.search(text or "")
+    return int(match.group(1)) if match else None
+
+
+def proceedings_gap(
+    *,
+    found: int,
+    expected: Optional[int],
+    total_pages: Optional[int],
+) -> Optional[str]:
+    """Why the listed proceedings may be incomplete, or None when all are shown.
+
+    A partial list must not pass as a completed check: notices on unread
+    proceedings would look like "nothing to do".
+    """
+    if expected is None and total_pages is None:
+        return "could not confirm how many proceedings there are"
+    if total_pages is not None and total_pages > 1:
+        return f"proceedings span {total_pages} pages"
+    if expected is not None and found != expected:
+        return f"read {found} of {expected} proceedings"
+    return None
 
 
 def _date_iso(d: Optional[date]) -> Optional[str]:
@@ -502,13 +545,73 @@ async def _open_view_notices(card: Locator, page: Page) -> tuple[bool, list[dict
             pass
 
 
+async def _current_page_size(page: Page) -> Optional[int]:
+    value = page.locator(PAGINATOR_SELECTOR).locator(PAGE_SIZE_SELECT).locator(
+        PAGE_SIZE_VALUE
+    )
+    if await value.count() == 0:
+        return None
+    text = await _inner_text(value.first)
+    return int(text) if text.isdigit() else None
+
+
+async def _show_largest_page(page: Page) -> Optional[int]:
+    """Pick the largest Items per Page option; return it, or None if unavailable."""
+    select = page.locator(PAGINATOR_SELECTOR).locator(PAGE_SIZE_SELECT)
+    try:
+        if await select.count() == 0:
+            return None
+        await select.first.click(timeout=_CARD_TIMEOUT_MS)
+        options = page.locator(PAGE_SIZE_OPTION)
+        await options.first.wait_for(state="visible", timeout=_CARD_TIMEOUT_MS)
+        sizes: list[tuple[int, int]] = []
+        for index in range(await options.count()):
+            text = await _inner_text(options.nth(index))
+            if text.isdigit():
+                sizes.append((int(text), index))
+        if not sizes:
+            await page.keyboard.press("Escape")
+            return None
+        size, index = max(sizes)
+        await options.nth(index).click(timeout=_CARD_TIMEOUT_MS)
+        await page.wait_for_timeout(800)
+        return size
+    except (PlaywrightTimeoutError, PlaywrightError):
+        logger.warning("Could not change e-Proceedings page size", exc_info=True)
+        return None
+
+
+async def _keep_page_size(page: Page, size: Optional[int]) -> None:
+    """The list may reset to its default size after Back; restore it."""
+    if size is None or await _current_page_size(page) == size:
+        return
+    await _show_largest_page(page)
+
+
+async def _expected_proceedings(page: Page) -> Optional[int]:
+    tab = page.get_by_role("tab", name=FOR_YOUR_ACTION_TAB)
+    if await tab.count() == 0:
+        tab = page.locator("[role='tab']").filter(has_text=FOR_YOUR_ACTION_TAB)
+    if await tab.count() == 0:
+        return None
+    return parse_for_your_action_count(await _inner_text(tab.first))
+
+
+async def _total_pages(page: Page) -> Optional[int]:
+    label = page.locator(PAGINATOR_SELECTOR).locator(RANGE_LABEL_SELECTOR)
+    if await label.count() == 0:
+        return None
+    return parse_total_pages(await _inner_text(label.first))
+
+
 async def _harvest_proceeding(
     card: Locator, page: Page
-) -> Optional[dict[str, Any]]:
+) -> tuple[bool, Optional[dict[str, Any]]]:
+    """Return (opened, latest notice). ``opened`` False means the card was not read."""
     meta = await _proceeding_meta(card)
     opened, api_notices = await _open_view_notices(card, page)
     if not opened:
-        return None
+        return False, None
 
     ui_notices = await _scrape_notices_ui(page)
     notices = ui_notices
@@ -525,14 +628,14 @@ async def _harvest_proceeding(
     await back_to_e_proceedings_list(page)
 
     if latest is None:
-        return None
+        return True, None
 
     if not latest.get("proceeding_name"):
         latest["proceeding_name"] = meta.get("proceeding_name")
     if not latest.get("assessment_year"):
         latest["assessment_year"] = meta.get("assessment_year")
     latest.pop("scrape_path", None)
-    return latest
+    return True, latest
 
 
 async def read_e_proceedings_notices(page: Page | None) -> NoticeHarvest:
@@ -560,32 +663,60 @@ async def read_e_proceedings_notices(page: Page | None) -> NoticeHarvest:
             error="Could not open e-Proceedings → For your Action",
         )
 
+    def _incomplete(reason: str) -> NoticeHarvest:
+        logger.warning("e-Proceedings list incomplete: %s", reason)
+        return NoticeHarvest(
+            source=SOURCE,
+            ok=False,
+            notices=[],
+            error=f"Incomplete e-Proceedings list: {reason}",
+            scrape_path="ui",
+        )
+
     cards = page.locator(PROCEEDING_CARD_SELECTOR)
     try:
         await cards.first.wait_for(state="visible", timeout=_CARD_TIMEOUT_MS)
     except PlaywrightTimeoutError:
-        count = await cards.count()
-        if count == 0:
+        if await cards.count() == 0:
+            expected = await _expected_proceedings(page)
+            if expected:
+                return _incomplete(f"tab shows {expected} but no proceedings loaded")
             logger.info("No e-proceeding cards on For your Action")
             return NoticeHarvest(source=SOURCE, ok=True, notices=[], scrape_path="ui")
 
+    page_size = await _show_largest_page(page)
+    expected = await _expected_proceedings(page)
+    total_pages = await _total_pages(page)
     count = await cards.count()
-    logger.info("Found %s e-proceeding card(s)", count)
+    logger.info(
+        "Found %s e-proceeding card(s); tab count=%s pages=%s page_size=%s",
+        count,
+        expected,
+        total_pages,
+        page_size,
+    )
+    gap = proceedings_gap(found=count, expected=expected, total_pages=total_pages)
+    if gap:
+        return _incomplete(gap)
+
     harvested: list[dict[str, Any]] = []
     # Re-query each iteration — DOM rebuilds after Back.
     for index in range(count):
+        unread = f"proceeding {index + 1} of {count} could not be read"
+        if index:
+            await _keep_page_size(page, page_size)
         cards = page.locator(PROCEEDING_CARD_SELECTOR)
         try:
             await cards.nth(index).wait_for(state="visible", timeout=_CARD_TIMEOUT_MS)
         except PlaywrightTimeoutError:
-            logger.warning("Proceeding card %s missing after refresh", index)
-            continue
+            return _incomplete(f"{unread} (card missing after Back)")
         try:
-            notice = await _harvest_proceeding(cards.nth(index), page)
+            opened, notice = await _harvest_proceeding(cards.nth(index), page)
         except Exception:
             logger.exception("Failed harvesting proceeding card %s", index)
-            await back_to_e_proceedings_list(page)
-            continue
+            return _incomplete(unread)
+        if not opened:
+            return _incomplete(f"{unread} (View Notices/Orders did not open)")
         if notice:
             harvested.append(notice)
 

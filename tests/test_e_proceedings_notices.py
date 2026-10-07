@@ -9,9 +9,12 @@ from app.portal.actions.read_e_proceedings_notices import (
     epoch_ms_to_date,
     map_api_notice,
     notices_from_api_payload,
+    parse_for_your_action_count,
     parse_labeled_field_from_text,
+    parse_total_pages,
     parse_ui_date,
     pick_latest_notice,
+    proceedings_gap,
 )
 from app.portal.notice_diagnosis import attach_summaries, diagnose_notice
 
@@ -271,6 +274,45 @@ def test_diagnose_notice_142_actionable() -> None:
     assert "142(1)" in summary
     assert "2026" in summary or "Sep" in summary
     assert "pending" in summary.lower() or "Critical" in summary
+
+
+def test_parse_total_pages() -> None:
+    assert parse_total_pages(" 1 of 1 pages ") == 1
+    assert parse_total_pages("2 of 3 pages") == 3
+    assert parse_total_pages("1 of 1 page") == 1
+    assert parse_total_pages("") is None
+    assert parse_total_pages("Items per Page") is None
+
+
+def test_parse_for_your_action_count() -> None:
+    assert parse_for_your_action_count("For your Action (8) ") == 8
+    assert parse_for_your_action_count("For your Action ( 12 )") == 12
+    assert parse_for_your_action_count("For your Action (0)") == 0
+    assert parse_for_your_action_count("For your Action") is None
+    assert parse_for_your_action_count("For your Information (3)") is None
+
+
+def test_proceedings_gap_complete_list() -> None:
+    assert proceedings_gap(found=8, expected=8, total_pages=1) is None
+    assert proceedings_gap(found=8, expected=None, total_pages=1) is None
+    assert proceedings_gap(found=8, expected=8, total_pages=None) is None
+
+
+def test_proceedings_gap_more_than_one_page() -> None:
+    gap = proceedings_gap(found=50, expected=60, total_pages=2)
+    assert gap is not None
+    assert "2 pages" in gap
+
+
+def test_proceedings_gap_count_mismatch() -> None:
+    gap = proceedings_gap(found=10, expected=12, total_pages=1)
+    assert gap == "read 10 of 12 proceedings"
+
+
+def test_proceedings_gap_unconfirmed_count() -> None:
+    gap = proceedings_gap(found=5, expected=None, total_pages=None)
+    assert gap is not None
+    assert "confirm" in gap
 
 
 def test_attach_summaries() -> None:
