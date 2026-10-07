@@ -111,7 +111,27 @@ def test_failure_upsert_always_updates_the_attempt() -> None:
 
 
 @pytest.fixture
-def sent(monkeypatch) -> list[str]:
+def recent_keys(monkeypatch) -> set[str]:
+    keys: set[str] = set()
+
+    async def recently_alerted(db, job):
+        return keys
+
+    async def sync_watchlist(db, job, source, *, notices, error_code):
+        return None
+
+    monkeypatch.setattr(notice_snapshot, "_recently_alerted", recently_alerted)
+    monkeypatch.setattr(notice_snapshot, "sync_watchlist", sync_watchlist)
+    return keys
+
+
+@pytest.fixture
+def bodies() -> list[str]:
+    return []
+
+
+@pytest.fixture
+def sent(monkeypatch, recent_keys, bodies) -> list[str]:
     subjects: list[str] = []
 
     async def advisor_email(db, client):
@@ -119,6 +139,7 @@ def sent(monkeypatch) -> list[str]:
 
     async def send(to_email, subject, text, html):
         subjects.append(subject)
+        bodies.append(text)
         return True
 
     monkeypatch.setattr(notice_snapshot, "_advisor_email", advisor_email)
@@ -130,6 +151,7 @@ def _job(status: str, requested_by: str = "cron"):
     return types.SimpleNamespace(
         id=uuid4(),
         client_id=uuid4(),
+        workflow="CHECK_E_PROCEEDINGS_NOTICES",
         status=status,
         requested_by_sub=requested_by,
         started_at=datetime(2026, 10, 3, tzinfo=timezone.utc),
@@ -173,7 +195,7 @@ def test_login_and_technical_failures_send_no_email(sent, status, code) -> None:
     assert sent == []
 
 
-def test_no_email_without_pending_notices_or_outside_cron(sent) -> None:
+def test_no_email_without_pending_notices_or_for_silent_runs(sent) -> None:
     done = [{"source": "e_proceedings", "has_submit_response": False, "din": "2"}]
     asyncio.run(
         notice_snapshot.record_notice_outcome(
@@ -187,3 +209,48 @@ def test_no_email_without_pending_notices_or_outside_cron(sent) -> None:
         )
     )
     assert sent == []
+
+
+def test_check_started_by_a_person_is_emailed(sent, bodies) -> None:
+    job = _job("completed", "8f0c2f4e-advisor-sub")
+    asyncio.run(
+        notice_snapshot.record_notice_outcome(
+            _Capture(), job, _CLIENT, "e_proceedings", notices=_PENDING
+        )
+    )
+    assert len(sent) == 1
+    assert "An Income Tax portal check for Rahul Sharma" in bodies[0]
+    assert "weekly" not in bodies[0]
+    assert job.result["alert_keys"] == ["1"]
+
+
+def test_scheduled_email_names_the_cadence(sent, bodies) -> None:
+    asyncio.run(
+        notice_snapshot.record_notice_outcome(
+            _Capture(), _job("completed"), _CLIENT, "e_proceedings", notices=_PENDING
+        )
+    )
+    assert "The weekly Income Tax portal check" in bodies[0]
+
+
+def test_same_notices_are_not_emailed_twice_in_a_day(sent, recent_keys) -> None:
+    recent_keys.add("1")
+    job = _job("completed", "8f0c2f4e-advisor-sub")
+    asyncio.run(
+        notice_snapshot.record_notice_outcome(
+            _Capture(), job, _CLIENT, "e_proceedings", notices=_PENDING
+        )
+    )
+    assert sent == []
+    assert job.result["alert_error"] == "already emailed recently"
+
+
+def test_a_new_notice_is_emailed_even_after_a_recent_email(sent, recent_keys) -> None:
+    recent_keys.add("1")
+    notices = _PENDING + [{"source": "e_proceedings", "has_submit_response": True, "din": "9"}]
+    asyncio.run(
+        notice_snapshot.record_notice_outcome(
+            _Capture(), _job("completed"), _CLIENT, "e_proceedings", notices=notices
+        )
+    )
+    assert len(sent) == 1

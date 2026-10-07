@@ -1,14 +1,17 @@
 """Which harvested notices need an advisor, and the email copy for that.
 
-Sent only for cron-run jobs that found notices needing action. Login and
-technical failures are recorded on the job and are not emailed.
+Sent for every completed check that found notices needing action: scheduled
+runs, and single or bulk checks started from tax-engine. Not sent for
+``cron-silent`` runs, or when the same pending notices were already emailed
+for that client in the last ``ALERT_REPEAT_HOURS``. Login and technical
+failures are recorded on the job and are not emailed.
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime
 from html import escape
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 from app.portal.notice_diagnosis import format_inr
@@ -17,6 +20,7 @@ CRON_REQUESTED_BY = "cron"
 # Scheduled jobs started by hand with --no-email. Queued like cron, never emailed.
 CRON_SILENT_REQUESTED_BY = "cron-silent"
 IST = ZoneInfo("Asia/Kolkata")
+ALERT_REPEAT_HOURS = 24
 
 # Failures caused by the client's portal login, not by the run. A monthly run
 # leaves them out of its success ratio.
@@ -54,6 +58,38 @@ def notice_needs_action(notice: Mapping[str, Any]) -> bool:
 
 def actionable_notices(notices: list[Mapping[str, Any]] | None) -> list[Mapping[str, Any]]:
     return [notice for notice in notices or [] if notice_needs_action(notice)]
+
+
+def is_scheduled(requested_by: Optional[str]) -> bool:
+    return (requested_by or "") in (CRON_REQUESTED_BY, CRON_SILENT_REQUESTED_BY)
+
+
+def emails_allowed(requested_by: Optional[str]) -> bool:
+    return (requested_by or "") != CRON_SILENT_REQUESTED_BY
+
+
+def alert_key(notice: Mapping[str, Any]) -> str:
+    """Identity of one pending notice, for "was this already emailed?"."""
+    din = str(notice.get("din") or "").strip()
+    if din:
+        return din
+    parts = (
+        notice.get("source"),
+        notice.get("notice_section"),
+        notice.get("assessment_year"),
+        notice.get("issued_on") or notice.get("date_of_demand_raised"),
+    )
+    return "|".join(str(part or "") for part in parts)
+
+
+def alert_keys(notices: Iterable[Mapping[str, Any]] | None) -> list[str]:
+    return sorted({alert_key(notice) for notice in notices or []})
+
+
+def already_alerted(keys: Iterable[str], recent: Iterable[str]) -> bool:
+    """Nothing new: every pending notice was in an email sent recently."""
+    wanted = set(keys)
+    return bool(wanted) and wanted <= set(recent)
 
 
 def mask_pan(pan: Optional[str]) -> str:
@@ -140,6 +176,7 @@ def render_action_required_email(
     notices: list[Mapping[str, Any]],
     advisor_first_name: Optional[str] = None,
     checked_at: Optional[datetime] = None,
+    scheduled: bool = True,
 ) -> tuple[str, str, str]:
     today = (checked_at.astimezone(IST).date() if checked_at else datetime.now(IST).date())
     label = _source_label(source)
@@ -160,20 +197,27 @@ def render_action_required_email(
     else:
         lines = [_proceeding_line(notice, today) for notice in notices]
         what = f"{count} {noun} pending response"
-    cadence = _SOURCE_CADENCE.get(source, "scheduled")
+    if scheduled:
+        check = f"The {_SOURCE_CADENCE.get(source, 'scheduled')} Income Tax portal check"
+    else:
+        check = "An Income Tax portal check"
+    footer = (
+        f"Checked on {when}. You will be reminded on later checks while a "
+        "response is still pending."
+    )
     text = (
         f"{greeting}\n\n"
-        f"The {cadence} Income Tax portal check for {client_name} "
+        f"{check} for {client_name} "
         f"(PAN {mask_pan(pan)}) found {what}.\n\n"
         + "\n".join(lines)
-        + f"\n\nChecked on {when}. This is sent again on each run while a response is still pending.\n"
+        + f"\n\n{footer}\n"
     )
     items = "".join(f"<li>{escape(line)}</li>" for line in lines)
     html = (
         f"<p>{escape(greeting)}</p>"
-        f"<p>The {escape(cadence)} Income Tax portal check for <strong>{escape(client_name)}</strong> "
+        f"<p>{escape(check)} for <strong>{escape(client_name)}</strong> "
         f"(PAN {escape(mask_pan(pan))}) found {escape(what)}.</p>"
         f"<ul>{items}</ul>"
-        f"<p>Checked on {escape(when)}. This is sent again on each run while a response is still pending.</p>"
+        f"<p>{escape(footer)}</p>"
     )
     return subject, text, html

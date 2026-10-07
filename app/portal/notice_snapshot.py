@@ -3,26 +3,33 @@
 The table is one row per client + source. Success replaces that source only.
 Failure updates the last-attempt columns and leaves the previous notices.
 
-Email goes out only when the job was queued by the cron (``requested_by_sub``
-is ``cron``), completed, and found notices needing action. Login problems are
-not emailed: an empty ``clients.it_portal_pass`` already marks the client as
-needing a password. A send failure never fails the job.
+Email goes out when the job completed and found notices needing action,
+whoever started it, except ``cron-silent`` runs. It is skipped when every
+pending notice was already emailed for this client in the last
+``ALERT_REPEAT_HOURS``. Login problems are not emailed: an empty
+``clients.it_portal_pass`` already marks the client as needing a password.
+A send failure never fails the job.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy.dialects.postgresql import insert
 
 from app.portal.notice_alerts import (
-    CRON_REQUESTED_BY,
+    ALERT_REPEAT_HOURS,
     actionable_notices,
+    alert_keys,
+    already_alerted,
     client_display_name,
+    emails_allowed,
+    is_scheduled,
     render_action_required_email,
 )
+from app.portal.notice_watchlist import sync_watchlist
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +72,33 @@ async def _advisor_email(db, client) -> tuple[Optional[str], Optional[str]]:
     if row is None:
         return None, None
     return (row.email or "").strip() or None, (row.first_name or "").strip() or None
+
+
+async def _recently_alerted(db, job) -> set[str]:
+    """Pending-notice keys already emailed for this client and workflow."""
+    from sqlalchemy import select
+
+    from nucleus.models.portal_automation import PortalAutomationJob
+
+    cutoff = _now() - timedelta(hours=ALERT_REPEAT_HOURS)
+    stmt = select(PortalAutomationJob.result).where(
+        PortalAutomationJob.client_id == job.client_id,
+        PortalAutomationJob.workflow == job.workflow,
+        PortalAutomationJob.id != job.id,
+        PortalAutomationJob.completed_at >= cutoff,
+        PortalAutomationJob.result["alert_emailed_at"].astext.isnot(None),
+    )
+    keys: set[str] = set()
+    async with db.begin_nested():
+        for result in (await db.execute(stmt)).scalars().all():
+            if not isinstance(result, dict):
+                continue
+            stored = result.get("alert_keys")
+            if isinstance(stored, list):
+                keys.update(str(key) for key in stored)
+            else:
+                keys.update(alert_keys(actionable_notices(result.get("notices"))))
+    return keys
 
 
 async def _send(to_email: str, subject: str, text: str, html: str) -> bool:
@@ -178,7 +212,7 @@ async def record_notice_outcome(
     error_code: Optional[str] = None,
     error_message: Optional[str] = None,
 ) -> None:
-    """Snapshot the outcome, then email the advisor when this was a cron run."""
+    """Snapshot the outcome, update the weekly list, then email the advisor."""
     try:
         await save_notice_snapshot(
             db,
@@ -193,12 +227,30 @@ async def record_notice_outcome(
     except Exception:
         logger.exception("Could not save client_notices for job %s", job.id)
 
-    if (getattr(job, "requested_by_sub", None) or "") != CRON_REQUESTED_BY:
+    change = await sync_watchlist(
+        db, job, source, notices=notices, error_code=error_code
+    )
+    if change:
+        _stamp_alert(job, watchlist=change)
+
+    requested_by = getattr(job, "requested_by_sub", None)
+    if not emails_allowed(requested_by):
         return
     if error_code or (getattr(job, "status", None) or "") != "completed":
         return
     pending = actionable_notices(notices)
     if not pending:
+        return
+
+    keys = alert_keys(pending)
+    try:
+        recent = await _recently_alerted(db, job)
+    except Exception:
+        logger.exception("Recent alert lookup failed for job %s; sending anyway", job.id)
+        recent = set()
+    if already_alerted(keys, recent):
+        logger.info("Notice email skipped (already sent in the last %sh) job=%s", ALERT_REPEAT_HOURS, job.id)
+        _stamp_alert(job, alert_error="already emailed recently")
         return
 
     try:
@@ -219,10 +271,13 @@ async def record_notice_outcome(
         notices=pending,
         advisor_first_name=first_name,
         checked_at=_now(),
+        scheduled=is_scheduled(requested_by),
     )
     sent = await _send(email, subject, text, html)
     if sent:
-        _stamp_alert(job, alert_emailed_at=_now().isoformat(), alert_error=None)
+        _stamp_alert(
+            job, alert_emailed_at=_now().isoformat(), alert_error=None, alert_keys=keys
+        )
         logger.info("Notice email sent job=%s to=%s", job.id, email)
     else:
         _stamp_alert(job, alert_error="email not sent")

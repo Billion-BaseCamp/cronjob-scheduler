@@ -7,6 +7,10 @@ from datetime import datetime, timezone
 from app.portal.notice_alerts import (
     ADVISOR_FIXABLE_ERRORS,
     actionable_notices,
+    alert_keys,
+    already_alerted,
+    emails_allowed,
+    is_scheduled,
     mask_pan,
     notice_needs_action,
     render_action_required_email,
@@ -86,6 +90,47 @@ def test_action_email_names_the_client_and_due_date() -> None:
     assert "05-Oct-2026" in text
     assert "Priya" in text
     assert "password" not in text.lower()
+
+
+def test_manual_check_email_has_no_cadence() -> None:
+    _subject, text, html = render_action_required_email(
+        client_name="Rahul Sharma",
+        pan="ABCDE1234F",
+        source="outstanding_demand",
+        notices=[{"source": "outstanding_demand", "din": "D1"}],
+        checked_at=datetime(2026, 10, 7, 6, 0, tzinfo=timezone.utc),
+        scheduled=False,
+    )
+    assert "An Income Tax portal check for Rahul Sharma" in text
+    assert "monthly" not in text
+    assert "monthly" not in html
+
+
+def test_who_gets_emails() -> None:
+    assert emails_allowed("cron")
+    assert emails_allowed("8f0c2f4e-advisor-sub")
+    assert emails_allowed(None)
+    assert not emails_allowed("cron-silent")
+    assert is_scheduled("cron") and is_scheduled("cron-silent")
+    assert not is_scheduled("8f0c2f4e-advisor-sub")
+
+
+def test_alert_keys_use_din_then_notice_details() -> None:
+    keys = alert_keys(
+        [
+            {"din": "100120049489"},
+            {"din": "100120049489"},
+            {"source": "outstanding_demand", "notice_section": "143(1)(a)",
+             "assessment_year": "2024-25", "date_of_demand_raised": "2025-01-10"},
+        ]
+    )
+    assert keys == ["100120049489", "outstanding_demand|143(1)(a)|2024-25|2025-01-10"]
+
+
+def test_already_alerted_only_when_nothing_is_new() -> None:
+    assert already_alerted(["a"], {"a", "b"})
+    assert not already_alerted(["a", "c"], {"a", "b"})
+    assert not already_alerted([], {"a"})
 
 
 def test_technical_failures_are_not_advisor_mail() -> None:
