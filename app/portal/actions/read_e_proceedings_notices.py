@@ -72,6 +72,9 @@ _UI_DATE_RE = re.compile(
 # "1 of 1 pages". The tab label carries the proceeding total, e.g. "(8)".
 PAGINATOR_SELECTOR = "mat-paginator#paginator, mat-paginator.mat-mdc-paginator"
 PAGE_SIZE_SELECT = ".mat-mdc-paginator-page-size mat-select"
+# Transparent layer over the select that opens it; a click on the select itself
+# is intercepted by it ("intercepts pointer events").
+PAGE_SIZE_TOUCH_TARGET = ".mat-mdc-paginator-page-size .mat-mdc-paginator-touch-target"
 PAGE_SIZE_VALUE = ".mat-mdc-select-value-text"
 PAGE_SIZE_OPTION = ".mat-mdc-select-panel mat-option"
 RANGE_LABEL_SELECTOR = ".mat-mdc-paginator-range-label"
@@ -555,13 +558,22 @@ async def _current_page_size(page: Page) -> Optional[int]:
     return int(text) if text.isdigit() else None
 
 
+async def _open_page_size_menu(page: Page) -> None:
+    paginator = page.locator(PAGINATOR_SELECTOR)
+    target = paginator.locator(PAGE_SIZE_TOUCH_TARGET)
+    if await target.count():
+        await target.first.click(timeout=_CARD_TIMEOUT_MS)
+    else:
+        await paginator.locator(PAGE_SIZE_SELECT).first.click(timeout=_CARD_TIMEOUT_MS)
+
+
 async def _show_largest_page(page: Page) -> Optional[int]:
     """Pick the largest Items per Page option; return it, or None if unavailable."""
     select = page.locator(PAGINATOR_SELECTOR).locator(PAGE_SIZE_SELECT)
     try:
         if await select.count() == 0:
             return None
-        await select.first.click(timeout=_CARD_TIMEOUT_MS)
+        await _open_page_size_menu(page)
         options = page.locator(PAGE_SIZE_OPTION)
         await options.first.wait_for(state="visible", timeout=_CARD_TIMEOUT_MS)
         sizes: list[tuple[int, int]] = []
