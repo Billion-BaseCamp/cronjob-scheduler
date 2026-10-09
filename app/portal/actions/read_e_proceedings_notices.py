@@ -77,6 +77,9 @@ PAGE_SIZE_SELECT = ".mat-mdc-paginator-page-size mat-select"
 PAGE_SIZE_TOUCH_TARGET = ".mat-mdc-paginator-page-size .mat-mdc-paginator-touch-target"
 PAGE_SIZE_VALUE = ".mat-mdc-select-value-text"
 PAGE_SIZE_OPTION = ".mat-mdc-select-panel mat-option"
+# While a select is open this transparent layer covers the whole page.
+OVERLAY_BACKDROP_SELECTOR = ".cdk-overlay-backdrop.cdk-overlay-backdrop-showing"
+_OVERLAY_TIMEOUT_MS = 5_000
 RANGE_LABEL_SELECTOR = ".mat-mdc-paginator-range-label"
 _RANGE_RE = re.compile(r"(\d+)\s+of\s+(\d+)\s+pages?", re.I)
 _TAB_COUNT_RE = re.compile(r"For your Action\s*\(\s*(\d+)\s*\)", re.I)
@@ -567,6 +570,18 @@ async def _open_page_size_menu(page: Page) -> None:
         await paginator.locator(PAGE_SIZE_SELECT).first.click(timeout=_CARD_TIMEOUT_MS)
 
 
+async def _close_overlay(page: Page) -> None:
+    """Close an open dropdown; its backdrop would block every later click."""
+    backdrop = page.locator(OVERLAY_BACKDROP_SELECTOR)
+    try:
+        if await backdrop.count() == 0:
+            return
+        await page.keyboard.press("Escape")
+        await backdrop.first.wait_for(state="hidden", timeout=_OVERLAY_TIMEOUT_MS)
+    except (PlaywrightTimeoutError, PlaywrightError):
+        logger.warning("Dropdown backdrop is still open", exc_info=True)
+
+
 async def _show_largest_page(page: Page) -> Optional[int]:
     """Pick the largest Items per Page option; return it, or None if unavailable."""
     select = page.locator(PAGINATOR_SELECTOR).locator(PAGE_SIZE_SELECT)
@@ -582,15 +597,24 @@ async def _show_largest_page(page: Page) -> Optional[int]:
             if text.isdigit():
                 sizes.append((int(text), index))
         if not sizes:
-            await page.keyboard.press("Escape")
             return None
         size, index = max(sizes)
-        await options.nth(index).click(timeout=_CARD_TIMEOUT_MS)
+        # The panel is position:fixed and can open below the window, out of
+        # reach of a mouse click.
+        await options.nth(index).evaluate("el => el.click()")
+        await page.locator(OVERLAY_BACKDROP_SELECTOR).first.wait_for(
+            state="hidden", timeout=_OVERLAY_TIMEOUT_MS
+        )
         await page.wait_for_timeout(800)
+        if await _current_page_size(page) != size:
+            logger.warning("e-Proceedings page size did not change to %s", size)
+            return None
         return size
     except (PlaywrightTimeoutError, PlaywrightError):
         logger.warning("Could not change e-Proceedings page size", exc_info=True)
         return None
+    finally:
+        await _close_overlay(page)
 
 
 async def _keep_page_size(page: Page, size: Optional[int]) -> None:
