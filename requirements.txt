@@ -31,9 +31,4 @@ tzlocal==5.3.1
 uvicorn==0.37.0
 watchfiles==1.1.0
 websockets==15.0.1
-# Staging test version: vs* tags are cut from nucleus staging and include
-# client_notice, watchlist and account_aggregator models. Switch to the main
-# vX.Y.Z release before merging this branch to main.
-nucleus @ git+https://github.com/Billion-BaseCamp/nucleus.git@vs0.53.3
-redis==5.2.1
-httpx==0.28.1
+nucleus @ git+https://github.com/Billion-BaseCamp/nucleus.git@v0.53.3

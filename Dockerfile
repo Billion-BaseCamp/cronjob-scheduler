@@ -1,4 +1,7 @@
-FROM python:3.11-slim
+# Bookworm (Debian 12). python:3.11-slim is Trixie, and Playwright 1.52
+# has no Debian 13 dep list — --with-deps then asks apt for Ubuntu 20.04
+# packages (ttf-unifont, ttf-ubuntu-font-family) that Trixie removed.
+FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
