@@ -1,4 +1,7 @@
 import os
+from typing import Optional
+from uuid import UUID
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,6 +38,24 @@ def _env_float(name: str, default: str) -> float:
         return float(raw)
     except ValueError:
         return float(default)
+
+
+def parse_uuid_list(raw: Optional[str]) -> Optional[tuple[UUID, ...]]:
+    """None when blank. Malformed entries are dropped, never widening to "all".
+
+    A value that is set but has no valid UUID gives an empty tuple, so a typo
+    on staging checks nobody instead of every client.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    ids: list[UUID] = []
+    for part in raw.split(","):
+        try:
+            ids.append(UUID(part.strip()))
+        except ValueError:
+            continue
+    return tuple(dict.fromkeys(ids))
 
 
 class Settings:
@@ -84,6 +105,36 @@ class Settings:
     PORTAL_AUTOMATION_SWEEP_INTERVAL_SECONDS: int = _env_int(
         "PORTAL_AUTOMATION_SWEEP_INTERVAL_SECONDS", 60
     )
+    # Scheduled notice runs. Off by default; turn on after a monthly run started
+    # by hand has built the first weekly list.
+    E_PROCEEDINGS_MONTHLY_CRON_ENABLED: bool = _env_flag(
+        "E_PROCEEDINGS_MONTHLY_CRON_ENABLED", "false"
+    )
+    E_PROCEEDINGS_WEEKLY_CRON_ENABLED: bool = _env_flag(
+        "E_PROCEEDINGS_WEEKLY_CRON_ENABLED", "false"
+    )
+    OUTSTANDING_DEMAND_CRON_ENABLED: bool = _env_flag(
+        "OUTSTANDING_DEMAND_CRON_ENABLED", "false"
+    )
+    # Completes running scheduled batches. Needed for runs started by hand too.
+    NOTICE_BATCH_FINALIZER_ENABLED: bool = _env_flag(
+        "NOTICE_BATCH_FINALIZER_ENABLED", "true"
+    )
+    NOTICE_BATCH_FINALIZER_MINUTES: int = max(
+        1, _env_int("NOTICE_BATCH_FINALIZER_MINUTES", 5)
+    )
+    NOTICE_BATCH_DEADLINE_HOURS: int = max(
+        1, _env_int("NOTICE_BATCH_DEADLINE_HOURS", 30)
+    )
+    E_PROCEEDINGS_MONTHLY_MIN_SUCCESS_RATIO: float = _env_float(
+        "E_PROCEEDINGS_MONTHLY_MIN_SUCCESS_RATIO", "0.8"
+    )
+    # Staging only: limit scheduled notice runs to these client ids. Keep empty
+    # in production; a limited monthly run would become the weekly list.
+    NOTICE_CRON_CLIENT_IDS: Optional[tuple[UUID, ...]] = parse_uuid_list(
+        os.getenv("NOTICE_CRON_CLIENT_IDS")
+    )
+
     S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")
     S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "ap-south-1"))
 

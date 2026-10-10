@@ -5,8 +5,11 @@ from uuid import UUID
 
 from nucleus.models import Client
 from nucleus.models.portal_automation import PortalAutomationJob
-from sqlalchemy import exists, func, select, text, update
+from sqlalchemy import case, exists, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
+
+# Matches ``cron`` and ``cron-silent``. Advisors' manual checks are claimed first.
+SCHEDULED_REQUESTED_BY_PATTERN = "cron%"
 
 
 def _now() -> datetime:
@@ -18,10 +21,22 @@ async def claim_next_queued(
 ) -> PortalAutomationJob | None:
     """Claim the oldest queued job that is safe to open a portal session for.
 
+    Manual jobs go before scheduled ones, so a 1,200-client monthly run does not
+    hold up an advisor's check for hours.
+
     Skips clients that already have a ``running`` job so two Chromes never share
     a PAN (Dual Login). Uses a transaction advisory lock per client so two
     slots cannot claim two queued jobs for the same client in parallel.
     """
+    scheduled_last = case(
+        (
+            func.coalesce(PortalAutomationJob.requested_by_sub, "").like(
+                SCHEDULED_REQUESTED_BY_PATTERN
+            ),
+            1,
+        ),
+        else_=0,
+    )
     running_clients = (
         select(PortalAutomationJob.client_id)
         .where(PortalAutomationJob.status == "running")
@@ -33,7 +48,7 @@ async def claim_next_queued(
             PortalAutomationJob.status == "queued",
             PortalAutomationJob.client_id.notin_(running_clients),
         )
-        .order_by(PortalAutomationJob.created_at.asc())
+        .order_by(scheduled_last, PortalAutomationJob.created_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
     )
