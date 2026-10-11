@@ -103,15 +103,17 @@ def test_no_password_count_matches_monthly_skip(cron, monkeypatch) -> None:
 
 
 def test_weekly_clients_limited_by_allowlist(cron, monkeypatch) -> None:
-    client_model, watch_model, batch_model, _ = cron._models()
-    manual_client = uuid4()
+    client_model, watch_model, _, _ = cron._models()
 
-    def final_query(allowlist):
+    def query(allowlist):
         monkeypatch.setattr(settings, "NOTICE_CRON_CLIENT_IDS", allowlist)
-        # latest monthly batch: none; manual watchlist rows: one client
-        db = _FakeDb([], [manual_client])
-        asyncio.run(cron._weekly_clients(db, client_model, watch_model, batch_model))
-        return _sql(db.statements[-1])
+        db = _FakeDb([uuid4()])
+        asyncio.run(cron._weekly_clients(db, client_model, watch_model))
+        assert len(db.statements) == 1
+        return _sql(db.statements[0])
 
-    assert final_query(None).count("clients.id IN") == 1
-    assert final_query((A,)).count("clients.id IN") == 2
+    sql = query(None)
+    assert sql.count("clients.id IN") == 1
+    assert "e_proceedings_watchlist.removed_at IS NULL" in sql
+    assert "batch_id" not in sql
+    assert query((A,)).count("clients.id IN") == 2

@@ -6,9 +6,10 @@ one running scheduled batch per workflow, so two processes or two triggers
 cannot start overlapping runs.
 
 The finalizer runs every few minutes. When every job in a batch has settled it
-completes the batch; a monthly e-Proceedings batch also writes next month's
-weekly list in the same transaction. A batch past its deadline is failed and
-its queued jobs are cancelled. A failed monthly batch never replaces the list.
+completes the batch; a monthly e-Proceedings batch with too few successful
+checks is marked failed instead. A batch past its deadline is failed and its
+queued jobs are cancelled. The finalizer never touches the weekly list: each
+job updates it as it finishes (see ``notice_watchlist``).
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ from app.core.config import settings
 from app.db.database import AsyncSessionLocal
 from app.portal.notice_alerts import CRON_REQUESTED_BY, CRON_SILENT_REQUESTED_BY
 from app.portal.notice_schedule import (
-    REASON_CARRIED_FORWARD,
     RUN_E_PROCEEDINGS_MONTHLY,
     RUN_E_PROCEEDINGS_WEEKLY,
     RUN_WORKFLOW,
@@ -38,7 +38,6 @@ from app.portal.notice_schedule import (
     is_settled,
     monthly_run_ok,
     notice_assessment_year,
-    select_watchlist,
     summarize,
     weekly_should_skip,
 )
@@ -173,41 +172,11 @@ async def _count_no_password(db, client_model) -> int:
     return int((await db.execute(stmt)).scalar_one())
 
 
-async def _latest_completed_monthly(db, batch_model, *, exclude: Optional[UUID] = None):
-    stmt = select(batch_model).where(
-        batch_model.run_type == RUN_E_PROCEEDINGS_MONTHLY,
-        batch_model.status == "completed",
-    )
-    if exclude is not None:
-        stmt = stmt.where(batch_model.id != exclude)
-    stmt = stmt.order_by(batch_model.completed_at.desc().nulls_last()).limit(1)
-    return (await db.execute(stmt)).scalars().first()
-
-
-async def _monthly_list(db, watch_model, batch_id: UUID) -> list[UUID]:
-    stmt = select(watch_model.client_id).where(watch_model.batch_id == batch_id)
-    return list((await db.execute(stmt)).scalars().all())
-
-
-async def _weekly_clients(db, client_model, watch_model, batch_model) -> list[UUID]:
-    """Latest completed monthly list plus manual entries, active clients only."""
-    monthly = await _latest_completed_monthly(db, batch_model)
-    sources = [
-        select(watch_model.client_id).where(
-            watch_model.batch_id.is_(None), watch_model.removed_at.is_(None)
-        )
-    ]
-    if monthly is not None:
-        sources.append(
-            select(watch_model.client_id).where(watch_model.batch_id == monthly.id)
-        )
-    ids: set[UUID] = set()
-    for stmt in sources:
-        ids.update((await db.execute(stmt)).scalars().all())
-    if not ids:
-        return []
+async def _weekly_clients(db, client_model, watch_model) -> list[UUID]:
+    """Active rows on the weekly list, active clients only."""
+    listed = select(watch_model.client_id).where(watch_model.removed_at.is_(None))
     stmt = select(client_model.id).where(
-        client_model.id.in_(ids), _active_client(client_model)
+        client_model.id.in_(listed), _active_client(client_model)
     )
     stmt = _limit_to_allowlist(stmt, client_model)
     return list((await db.execute(stmt)).scalars().all())
@@ -315,7 +284,7 @@ async def start_scheduled_run(
 
         base = _scope_summary()
         if run_type == RUN_E_PROCEEDINGS_WEEKLY:
-            client_ids = await _weekly_clients(db, client_model, watch_model, batch_model)
+            client_ids = await _weekly_clients(db, client_model, watch_model)
         else:
             client_ids = await _all_eligible_clients(db, client_model)
             base["skipped_no_password"] = await _count_no_password(db, client_model)
@@ -413,24 +382,8 @@ async def _load_outcomes(db, job_model, batch_id: UUID) -> list[JobOutcome]:
     ]
 
 
-async def _write_watchlist(db, watch_model, batch_id: UUID, entries) -> None:
-    for start in range(0, len(entries), _INSERT_CHUNK):
-        rows = [
-            {
-                "id": uuid4(),
-                "batch_id": batch_id,
-                "client_id": entry.client_id,
-                "reason": entry.reason,
-                "action_required_count": entry.action_required_count,
-                "job_id": entry.job_id,
-            }
-            for entry in entries[start : start + _INSERT_CHUNK]
-        ]
-        await db.execute(insert(watch_model).values(rows))
-
-
 async def _finalize_one(batch_id: UUID, now: datetime) -> Optional[str]:
-    _, watch_model, batch_model, job_model = _models()
+    _, _, batch_model, job_model = _models()
     async with AsyncSessionLocal() as db:
         batch = (
             await db.execute(
@@ -483,17 +436,6 @@ async def _finalize_one(batch_id: UUID, now: datetime) -> Optional[str]:
                 batch.summary = summary
                 await db.commit()
                 return f"{batch.run_type} {batch_id}: failed ({reason})"
-            previous = await _latest_completed_monthly(db, batch_model, exclude=batch_id)
-            previous_ids = (
-                await _monthly_list(db, watch_model, previous.id) if previous else []
-            )
-            entries = select_watchlist(outcomes, previous_ids)
-            await _write_watchlist(db, watch_model, batch_id, entries)
-            summary["watchlist"] = len(entries)
-            summary["carried_forward"] = sum(
-                1 for entry in entries if entry.reason == REASON_CARRIED_FORWARD
-            )
-            summary["previous_batch_id"] = str(previous.id) if previous else None
 
         batch.status = "completed"
         batch.completed_at = now

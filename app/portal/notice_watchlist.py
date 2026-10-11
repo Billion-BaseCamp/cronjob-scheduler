@@ -1,10 +1,14 @@
-"""Keep the weekly e-Proceedings list in step with checks started by hand.
+"""Keep the weekly e-Proceedings list in step with check results.
 
-A single or bulk check that finds notices needing action adds the client as a
-standing entry (no batch, reason ``action_required``), so the Monday runs pick
-them up before the next monthly run. A later completed check of any kind that
-finds nothing pending removes that entry. Entries an advisor added (reason
-``manual``) are never touched, and failed checks change nothing.
+The list holds at most one active row per client:
+
+- Any completed check that finds a notice needing action adds the client
+  (reason ``action_required``), whoever started it.
+- Only a completed monthly check that finds nothing pending removes the
+  client. Weekly and hand-run checks never remove; until the next monthly run
+  only an advisor or admin can take a client off.
+- Rows an advisor added (reason ``manual``) are never removed by a check.
+- Failed, waiting, and incomplete checks change nothing.
 """
 
 from __future__ import annotations
@@ -14,18 +18,17 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
-from sqlalchemy import text, update
+from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
-from app.portal.notice_alerts import actionable_notices, is_scheduled
-from app.portal.notice_schedule import REASON_ACTION_REQUIRED
+from app.portal.notice_alerts import actionable_notices
+from app.portal.notice_schedule import REASON_ACTION_REQUIRED, RUN_E_PROCEEDINGS_MONTHLY
 
 logger = logging.getLogger(__name__)
 
 SOURCE = "e_proceedings"
 ADD = "add"
 REMOVE = "remove"
-AUTO_NOTE = "Added by a portal check that found notices needing action."
 
 
 def watchlist_change(
@@ -33,56 +36,59 @@ def watchlist_change(
     source: str,
     status: Optional[str],
     error_code: Optional[str],
-    requested_by: Optional[str],
     pending_count: int,
+    monthly: bool,
 ) -> Optional[str]:
     if source != SOURCE or error_code or status != "completed":
         return None
-    if pending_count == 0:
-        return REMOVE
-    # Scheduled runs already feed the list through the monthly batch.
-    if is_scheduled(requested_by):
-        return None
-    return ADD
+    if pending_count > 0:
+        return ADD
+    return REMOVE if monthly else None
 
 
-def _watch_model():
-    from nucleus.models.portal_automation import EProceedingsWatchlist
+def _models():
+    from nucleus.models.portal_automation import (
+        EProceedingsWatchlist,
+        PortalAutomationBatch,
+    )
 
-    return EProceedingsWatchlist
+    return EProceedingsWatchlist, PortalAutomationBatch
 
 
-async def _add(db, job, pending_count: int) -> None:
-    watch = _watch_model()
+async def _is_monthly(db, job) -> bool:
+    batch_id = getattr(job, "batch_id", None)
+    if batch_id is None:
+        return False
+    _, batch = _models()
+    run_type = (
+        await db.execute(select(batch.run_type).where(batch.id == batch_id))
+    ).scalar_one_or_none()
+    return run_type == RUN_E_PROCEEDINGS_MONTHLY
+
+
+async def _add(db, job) -> None:
+    watch, _ = _models()
     stmt = insert(watch).values(
         id=uuid4(),
-        batch_id=None,
         client_id=job.client_id,
         reason=REASON_ACTION_REQUIRED,
-        action_required_count=pending_count,
         job_id=job.id,
         added_by_sub=getattr(job, "requested_by_sub", None),
-        note=AUTO_NOTE,
     )
     stmt = stmt.on_conflict_do_update(
         index_elements=["client_id"],
-        index_where=text("batch_id IS NULL AND removed_at IS NULL"),
-        set_={
-            "action_required_count": stmt.excluded.action_required_count,
-            "job_id": stmt.excluded.job_id,
-        },
-        where=watch.reason == REASON_ACTION_REQUIRED,
+        index_where=text("removed_at IS NULL"),
+        set_={"job_id": stmt.excluded.job_id},
     )
     await db.execute(stmt)
 
 
 async def _remove(db, job, now: datetime) -> None:
-    watch = _watch_model()
+    watch, _ = _models()
     await db.execute(
         update(watch)
         .where(
             watch.client_id == job.client_id,
-            watch.batch_id.is_(None),
             watch.removed_at.is_(None),
             watch.reason == REASON_ACTION_REQUIRED,
         )
@@ -99,26 +105,27 @@ async def sync_watchlist(
     error_code: Optional[str],
 ) -> Optional[str]:
     """Apply the add/remove rule. Errors are logged; they never fail the job."""
-    pending = actionable_notices(notices)
-    change = watchlist_change(
-        source=source,
-        status=getattr(job, "status", None),
-        error_code=error_code,
-        requested_by=getattr(job, "requested_by_sub", None),
-        pending_count=len(pending),
-    )
-    if change is None:
+    status = getattr(job, "status", None)
+    if source != SOURCE or error_code or status != "completed":
         return None
+    pending_count = len(actionable_notices(notices))
     try:
         async with db.begin_nested():
+            change = watchlist_change(
+                source=source,
+                status=status,
+                error_code=error_code,
+                pending_count=pending_count,
+                monthly=pending_count == 0 and await _is_monthly(db, job),
+            )
             if change == ADD:
-                await _add(db, job, len(pending))
-            else:
+                await _add(db, job)
+            elif change == REMOVE:
                 await _remove(db, job, datetime.now(timezone.utc))
     except ImportError:
         logger.error("Watchlist model is not in the installed nucleus; list not updated")
         return None
     except Exception:
-        logger.exception("Watchlist %s failed for job %s", change, job.id)
+        logger.exception("Watchlist update failed for job %s", job.id)
         return None
     return change

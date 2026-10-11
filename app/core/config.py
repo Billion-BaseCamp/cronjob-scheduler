@@ -130,7 +130,7 @@ class Settings:
         "E_PROCEEDINGS_MONTHLY_MIN_SUCCESS_RATIO", "0.8"
     )
     # Staging only: limit scheduled notice runs to these client ids. Keep empty
-    # in production; a limited monthly run would become the weekly list.
+    # in production; clients outside the list would never be checked.
     NOTICE_CRON_CLIENT_IDS: Optional[tuple[UUID, ...]] = parse_uuid_list(
         os.getenv("NOTICE_CRON_CLIENT_IDS")
     )

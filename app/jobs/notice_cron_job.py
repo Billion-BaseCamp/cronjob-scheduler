@@ -1,7 +1,8 @@
 """Scheduled notice runs and the batch finalizer.
 
-- e-Proceedings monthly: 28th at 23:00 IST, every client; builds the weekly list.
-- e-Proceedings weekly: Mondays at 23:00 IST, the latest completed list only.
+- e-Proceedings monthly: 28th at 23:00 IST, every client; the only run that
+  takes clients off the weekly list.
+- e-Proceedings weekly: Mondays at 23:00 IST, clients on the weekly list only.
 - Outstanding demand monthly: 27th at 23:00 IST, every client.
 - Finalizer: every few minutes, completes or fails running batches.
 

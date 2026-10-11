@@ -1,8 +1,7 @@
 """Rules for scheduled notice runs. No database, no browser.
 
-- Monthly e-Proceedings (28th): check every client, then choose next month's
-  weekly list.
-- Weekly e-Proceedings (Mondays): check only that list plus manual entries.
+- Monthly e-Proceedings (28th): check every client.
+- Weekly e-Proceedings (Mondays): check only the clients on the weekly list.
 - Monthly outstanding demand (27th): check every client.
 """
 
@@ -33,7 +32,6 @@ OUTSTANDING_DEMAND_MONTHLY_DAY = 27
 CRON_HOUR = 23
 
 REASON_ACTION_REQUIRED = "action_required"
-REASON_CARRIED_FORWARD = "carried_forward"
 
 # Waiting jobs need a person and would never finish on their own.
 SETTLED_STATUSES = frozenset(
@@ -77,14 +75,6 @@ class JobOutcome:
     action_required_count: Optional[int] = None
 
 
-@dataclass(frozen=True)
-class WatchEntry:
-    client_id: UUID
-    reason: str
-    action_required_count: Optional[int]
-    job_id: Optional[UUID]
-
-
 def is_settled(status_counts: Mapping[str, int]) -> bool:
     return all(status in SETTLED_STATUSES for status, n in status_counts.items() if n)
 
@@ -126,7 +116,8 @@ def summarize(outcomes: Iterable[JobOutcome]) -> dict[str, int]:
 
 
 def monthly_run_ok(summary: Mapping[str, int], min_success_ratio: float) -> tuple[bool, str]:
-    """A portal outage or changed page must not replace the list with an empty one.
+    """Mark a monthly run failed when too few checks succeeded (portal outage,
+    changed page). The label only; the weekly list is never touched here.
 
     Password, OTP, and CAPTCHA problems belong to the client, not the run, so
     they are left out of the ratio.
@@ -145,38 +136,3 @@ def monthly_run_ok(summary: Mapping[str, int], min_success_ratio: float) -> tupl
             f"({ratio:.0%}, need {min_success_ratio:.0%})."
         )
     return True, ""
-
-
-def select_watchlist(
-    outcomes: Iterable[JobOutcome],
-    previous_client_ids: Iterable[UUID],
-) -> list[WatchEntry]:
-    """Next month's weekly list.
-
-    A completed check with at least one notice needing action puts the client
-    on. A client from last month's list without a completed check this month
-    (failed, stuck, or not queued) keeps their place.
-    """
-    rows = list(outcomes)
-    completed = {o.client_id: o for o in rows if o.status == "completed"}
-    latest_job = {o.client_id: o.job_id for o in rows}
-    entries: dict[UUID, WatchEntry] = {}
-    for client_id, outcome in completed.items():
-        count = outcome.action_required_count or 0
-        if count >= 1:
-            entries[client_id] = WatchEntry(
-                client_id=client_id,
-                reason=REASON_ACTION_REQUIRED,
-                action_required_count=count,
-                job_id=outcome.job_id,
-            )
-    for client_id in previous_client_ids:
-        if client_id in completed or client_id in entries:
-            continue
-        entries[client_id] = WatchEntry(
-            client_id=client_id,
-            reason=REASON_CARRIED_FORWARD,
-            action_required_count=None,
-            job_id=latest_job.get(client_id),
-        )
-    return list(entries.values())
