@@ -24,7 +24,7 @@ from app.portal.evidence_step import (
     EVIDENCE_LOGIN,
     primary_notices_evidence_step,
 )
-from app.portal.notice_alerts import actionable_notices
+from app.portal.notice_alerts import actionable_notices, is_scheduled
 from app.portal.notice_snapshot import record_notice_outcome
 from app.portal.store import get_client
 
@@ -132,6 +132,17 @@ def _apply_login_outcome(job, client, outcome: LoginOutcome) -> bool:
         return False
 
     if outcome == LoginOutcome.INVALID_PASSWORD:
+        if is_scheduled(job.requested_by_sub):
+            # A portal glitch during a bulk run must not wipe every client's password.
+            _fail(
+                job,
+                error_code="INVALID_PASSWORD",
+                message=(
+                    "Portal rejected the password during a scheduled check. "
+                    "The saved password was kept; check it and run again."
+                ),
+            )
+            return False
         client.it_portal_pass = None
         _fail(
             job,
