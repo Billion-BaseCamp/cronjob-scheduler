@@ -2,20 +2,23 @@
 
 The form posts to /iec/loginapi/login. HTTP status is often 200 even
 when login failed — the real error is in JSON `messages`.
-Passwords in that JSON are redacted before logging.
+Only the portal's message codes are logged, never the body: it carries the
+client's PAN, mobile and email.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from playwright.async_api import Page, Response
 
 logger = logging.getLogger(__name__)
 
-_SECRET_KEYS = ("pass", "password", "otp", "authToken", "token")
+_PAN_RE = re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b", re.I)
+_MAX_SUMMARY = 300
 
 
 def attach_network_log(page: Page) -> None:
@@ -41,32 +44,42 @@ async def login_api_error(response: Response) -> str | None:
             continue
         code = str(msg.get("code") or "").strip()
         desc = str(msg.get("desc") or "").strip()
-        return " ".join(part for part in (code, desc) if part) or "ERROR"
+        return mask_pans(" ".join(part for part in (code, desc) if part)) or "ERROR"
     return None
 
 
-def _redact(value: Any) -> Any:
-    if not isinstance(value, dict):
-        return value
-    out = {}
-    for key, item in value.items():
-        if key in _SECRET_KEYS:
-            out[key] = "***"
-        elif isinstance(item, dict):
-            out[key] = _redact(item)
-        else:
-            out[key] = item
+def mask_pans(text: str) -> str:
+    return _PAN_RE.sub("[PAN]", text)
+
+
+def _portal_messages(data: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for key in ("messages", "errors"):
+        for msg in data.get(key) or []:
+            if not isinstance(msg, dict):
+                continue
+            code = str(msg.get("code") or "").strip()
+            desc = str(msg.get("desc") or "").strip()
+            text = " ".join(part for part in (code, desc) if part)
+            if text:
+                out.append(text)
     return out
 
 
-def _body_for_log(text: str) -> str:
+def summarize_body(text: str) -> str:
+    """Portal message codes from a response body, safe to log."""
+    if not text:
+        return "(empty body)"
     try:
-        text = json.dumps(
-            _redact(json.loads(text)), separators=(",", ":")
-        )
-    except Exception:
-        pass
-    return text.replace("\n", " ")[:400]
+        data = json.loads(text)
+    except ValueError:
+        return f"(non-JSON body, {len(text)} chars)"
+    if not isinstance(data, dict):
+        return "(JSON body)"
+    messages = _portal_messages(data)
+    if not messages:
+        return "(no portal messages)"
+    return mask_pans("; ".join(messages))[:_MAX_SUMMARY]
 
 
 async def _on_response(response: Response) -> None:
@@ -89,6 +102,6 @@ async def _on_response(response: Response) -> None:
         "NET %s %s %s %s",
         response.status,
         request.method,
-        response.url,
-        _body_for_log(body),
+        mask_pans(response.url),
+        summarize_body(body),
     )
