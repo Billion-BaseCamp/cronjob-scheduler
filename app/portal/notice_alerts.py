@@ -32,6 +32,7 @@ ADVISOR_FIXABLE_ERRORS = frozenset(
         "OTP_REQUIRED",
         "CAPTCHA_REQUIRED",
         "DUAL_LOGIN",
+        "VAULT_HIGHER_SECURITY",
     }
 )
 

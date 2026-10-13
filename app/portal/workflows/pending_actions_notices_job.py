@@ -226,6 +226,19 @@ def _apply_login_outcome(job, client, outcome: LoginOutcome) -> bool:
         )
         return False
 
+    if outcome == LoginOutcome.VAULT_HIGHER_SECURITY:
+        _fail(
+            job,
+            error_code="VAULT_HIGHER_SECURITY",
+            message=(
+                "Client turned on e-Filing Vault Higher Security, so the "
+                "portal needs Aadhaar OTP or net banking after the password. "
+                "Ask the client to turn it off or check the portal by hand. "
+                "The saved password was not changed."
+            ),
+        )
+        return False
+
     _fail(
         job,
         error_code="UNKNOWN",
