@@ -13,7 +13,11 @@ from app.core.config import settings
 from app.portal.actions.login import run_login
 from app.portal.actions.login_outcomes import LoginOutcome
 from app.portal.actions.logout import run_logout
-from app.portal.actions.read_filed_return_status import LIFECYCLE_SELECTOR, read_itr_status
+from app.portal.actions.read_filed_return_status import (
+    LIFECYCLE_SELECTOR,
+    not_filed_outcome,
+    read_itr_status,
+)
 from app.portal.actions.view_filed_returns import run_open_filed_returns
 from app.portal.evidence import upload_screenshot
 from app.portal.evidence_step import (
@@ -288,8 +292,12 @@ async def run_filed_return_status_job(
             logged_out = await run_logout(page)
 
             job.status = "completed"
-            job.error_code = None
-            job.error_message = None
+            missing = not_filed_outcome(status)
+            if missing is None:
+                job.error_code = None
+                job.error_message = None
+            else:
+                job.error_code, job.error_message = missing
             job.worker_id = None
             job.completed_at = _now()
             _merge_result(

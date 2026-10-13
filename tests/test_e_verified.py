@@ -2,7 +2,11 @@
 
 import pytest
 
-from app.portal.actions.read_filed_return_status import is_e_verified
+from app.portal.actions.read_filed_return_status import (
+    ITR_NOT_FILED,
+    is_e_verified,
+    not_filed_outcome,
+)
 
 
 @pytest.mark.parametrize(
@@ -66,3 +70,28 @@ def test_is_e_verified(
     expected: bool,
 ) -> None:
     assert is_e_verified(filing_type, labels) is expected
+
+
+def test_not_filed_outcome_sets_error() -> None:
+    code, message = not_filed_outcome(
+        {
+            "assessment_year": "2025-26",
+            "e_verified": None,
+            "itr_status": "No filing found for AY 2025-26",
+        }
+    ) or ("", "")
+    assert code == ITR_NOT_FILED
+    assert message == "No filing found for AY 2025-26"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"e_verified": False, "itr_status": "Pending for e-verification"},
+        {"e_verified": True, "itr_status": "Successfully e-verified"},
+        {"e_verified": None, "itr_status": "dry-run"},
+        {"e_verified": None, "itr_status": "no page"},
+    ],
+)
+def test_not_filed_outcome_ignores_other_results(result: dict) -> None:
+    assert not_filed_outcome(result) is None

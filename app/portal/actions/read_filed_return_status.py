@@ -342,15 +342,34 @@ async def read_status_for_assessment_year(
     )
 
 
+ITR_NOT_FILED = "ITR_NOT_FILED"
+_NO_FILING_PREFIX = "No filing found for AY "
+
+
+def no_filing_message(assessment_year: str) -> str:
+    return f"{_NO_FILING_PREFIX}{assessment_year}"
+
+
+def not_filed_outcome(result: dict[str, object]) -> tuple[str, str] | None:
+    """Error to store when the portal has no return for this assessment year.
+
+    Dry-run and missing-page results are left unset.
+    """
+    if result.get("e_verified") is not None:
+        return None
+    message = result.get("itr_status")
+    if not isinstance(message, str) or not message.startswith(_NO_FILING_PREFIX):
+        return None
+    return (ITR_NOT_FILED, message)
+
+
 def status_as_result(status: FiledReturnStatus) -> dict[str, object]:
     """Shape stored on job.result. Does not write filing_status."""
     if not status.found:
         return {
             "assessment_year": status.assessment_year,
             "e_verified": None,
-            "itr_status": (
-                f"No filing found for AY {status.assessment_year}"
-            ),
+            "itr_status": no_filing_message(status.assessment_year),
         }
     return {
         "assessment_year": status.assessment_year,
