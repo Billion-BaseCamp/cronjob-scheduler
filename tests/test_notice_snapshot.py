@@ -182,6 +182,7 @@ def test_pending_notices_send_the_action_required_email(sent) -> None:
         ("waiting_for_password", "MISSING_PASSWORD"),
         ("waiting_for_otp", "OTP_REQUIRED"),
         ("failed", "DUAL_LOGIN"),
+        ("failed", "VAULT_HIGHER_SECURITY"),
         ("failed", "UI_DRIFT"),
     ],
 )

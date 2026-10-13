@@ -15,6 +15,7 @@ class LoginOutcome(str, Enum):
     PORTAL_BLOCKED = "portal_blocked"
     NOT_AUTHENTICATED = "not_authenticated"
     DUAL_LOGIN = "dual_login"
+    VAULT_HIGHER_SECURITY = "vault_higher_security"
     CRYPTO_ERROR = "crypto_error"
     UI_DRIFT = "ui_drift"
     UNKNOWN = "unknown"
@@ -49,6 +50,9 @@ _DUAL_LOGIN = (
     "session already active",
     "ef00177",
 )
+# "Verify your account" page shown after the password for taxpayers who
+# turned on e-Filing Vault Higher Security (Aadhaar OTP or net banking only).
+_VAULT_HIGHER_SECURITY = ("opted for e-filing vault higher security",)
 
 
 def is_assured_invalid_password(*, page_text: str, url: str = "") -> bool:
@@ -85,6 +89,8 @@ def classify_login_page(
         on_password_page and ASSURED_INVALID_PASSWORD in text
     ):
         return LoginOutcome.INVALID_PASSWORD
+    if _has(text, _VAULT_HIGHER_SECURITY):
+        return LoginOutcome.VAULT_HIGHER_SECURITY
     if has_otp_widget or _has(text, _OTP):
         return LoginOutcome.OTP_REQUIRED
     if has_captcha_widget or "enter captcha" in text:

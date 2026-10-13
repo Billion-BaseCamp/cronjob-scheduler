@@ -52,6 +52,8 @@ LOGGED_IN_SELECTOR = "#postLoginMenuBar, app-dashboard, a#Dashboard"
 # Dual-login modal on #/login/password (live portal HTML).
 LOGIN_HERE_BUTTON_SELECTOR = "button.defaultButton.primaryButton"
 _LOGIN_HERE_RE = re.compile(r"Login\s+Here", re.I)
+# e-Filing Vault Higher Security "Verify your account" page (live portal HTML).
+VAULT_HIGHER_SECURITY_SELECTOR = "app-higher-security-options"
 
 CAPTCHA_SELECTOR = (
     "img[src*='captcha'], img[alt*='captcha' i], img.captcha, "
@@ -262,6 +264,7 @@ async def _confirm_logged_in(
     """
     logged_in = page.locator(LOGGED_IN_SELECTOR).first
     login_here = _login_here_button(page)
+    vault = page.locator(VAULT_HIGHER_SECURITY_SELECTOR).first
 
     if expect_dual_login:
         try:
@@ -275,11 +278,18 @@ async def _confirm_logged_in(
         return await _wait_logged_in(page, logged_in)
 
     which = await _first_visible(
-        [("logged_in", logged_in), ("login_here", login_here)],
+        [
+            ("logged_in", logged_in),
+            ("login_here", login_here),
+            ("vault", vault),
+        ],
         30_000,
     )
     if which == "logged_in":
         return LoginOutcome.SUCCESS
+    if which == "vault":
+        logger.warning("e-Filing Vault Higher Security page url=%s", page.url)
+        return LoginOutcome.VAULT_HIGHER_SECURITY
     if which == "login_here":
         failed = await _click_login_here(page, login_here)
         if failed is not None:
