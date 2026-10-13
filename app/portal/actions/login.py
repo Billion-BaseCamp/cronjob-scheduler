@@ -197,15 +197,35 @@ async def _click_login_here(page: Page, login_here: Locator) -> Optional[LoginOu
     return None
 
 
-async def _wait_logged_in(page: Page, logged_in: Locator) -> LoginOutcome:
+def _vault_page(page: Page) -> LoginOutcome:
+    logger.warning("e-Filing Vault Higher Security page url=%s", page.url)
+    return LoginOutcome.VAULT_HIGHER_SECURITY
+
+
+async def _dual_login_or_vault(page: Page) -> LoginOutcome:
+    """Dual Login takeover did not finish; the vault page may be why."""
     try:
-        await logged_in.wait_for(state="visible", timeout=30_000)
-    except PlaywrightTimeout:
-        logger.warning(
-            "Logged-in page missing after Login Here url=%s", page.url
-        )
+        text = await page.inner_text("body")
+    except Exception:
         return LoginOutcome.DUAL_LOGIN
-    return LoginOutcome.SUCCESS
+    outcome = classify_login_page(page_text=text, url=page.url or "")
+    if outcome == LoginOutcome.VAULT_HIGHER_SECURITY:
+        return _vault_page(page)
+    return LoginOutcome.DUAL_LOGIN
+
+
+async def _wait_logged_in(
+    page: Page, logged_in: Locator, vault: Locator
+) -> LoginOutcome:
+    which = await _first_visible(
+        [("logged_in", logged_in), ("vault", vault)], 30_000
+    )
+    if which == "logged_in":
+        return LoginOutcome.SUCCESS
+    if which == "vault":
+        return _vault_page(page)
+    logger.warning("Logged-in page missing after Login Here url=%s", page.url)
+    return await _dual_login_or_vault(page)
 
 
 async def _first_visible(
@@ -267,15 +287,18 @@ async def _confirm_logged_in(
     vault = page.locator(VAULT_HIGHER_SECURITY_SELECTOR).first
 
     if expect_dual_login:
-        try:
-            await login_here.wait_for(state="visible", timeout=15_000)
-        except PlaywrightTimeout:
+        which = await _first_visible(
+            [("login_here", login_here), ("vault", vault)], 15_000
+        )
+        if which == "vault":
+            return _vault_page(page)
+        if which is None:
             logger.warning("Login Here did not appear url=%s", page.url)
-            return LoginOutcome.DUAL_LOGIN
+            return await _dual_login_or_vault(page)
         failed = await _click_login_here(page, login_here)
         if failed is not None:
             return failed
-        return await _wait_logged_in(page, logged_in)
+        return await _wait_logged_in(page, logged_in, vault)
 
     which = await _first_visible(
         [
@@ -288,13 +311,12 @@ async def _confirm_logged_in(
     if which == "logged_in":
         return LoginOutcome.SUCCESS
     if which == "vault":
-        logger.warning("e-Filing Vault Higher Security page url=%s", page.url)
-        return LoginOutcome.VAULT_HIGHER_SECURITY
+        return _vault_page(page)
     if which == "login_here":
         failed = await _click_login_here(page, login_here)
         if failed is not None:
             return failed
-        return await _wait_logged_in(page, logged_in)
+        return await _wait_logged_in(page, logged_in, vault)
     return await _timeout_logged_in(page)
 
 
