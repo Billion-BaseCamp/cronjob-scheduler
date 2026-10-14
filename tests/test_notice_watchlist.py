@@ -122,9 +122,7 @@ def sync(monkeypatch):
     return run
 
 
-_PENDING = [
-    {"source": "e_proceedings", "has_submit_response": True, "response_due_date": "2026-10-20"}
-]
+_PENDING = [{"source": "e_proceedings", "has_submit_response": True}]
 
 
 def _job(status: str = "completed"):

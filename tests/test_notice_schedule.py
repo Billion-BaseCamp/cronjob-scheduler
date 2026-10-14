@@ -56,11 +56,7 @@ def test_action_count_uses_the_stored_value_then_the_notices() -> None:
         action_count_from_result(
             {
                 "notices": [
-                    {
-                        "source": "e_proceedings",
-                        "has_submit_response": True,
-                        "response_due_date": "2026-10-20",
-                    },
+                    {"source": "e_proceedings", "has_submit_response": True},
                     {"source": "e_proceedings", "has_submit_response": False},
                 ]
             }

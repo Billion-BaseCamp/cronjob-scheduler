@@ -160,14 +160,7 @@ def _job(status: str, requested_by: str = "cron"):
 
 
 _CLIENT = types.SimpleNamespace(first_name="Rahul", last_name="Sharma", pan_number="ABCDE1234F")
-_PENDING = [
-    {
-        "source": "e_proceedings",
-        "has_submit_response": True,
-        "response_due_date": "2026-10-20",
-        "din": "1",
-    }
-]
+_PENDING = [{"source": "e_proceedings", "has_submit_response": True, "din": "1"}]
 
 
 def test_pending_notices_send_the_action_required_email(sent) -> None:
@@ -255,14 +248,7 @@ def test_same_notices_are_not_emailed_twice_in_a_day(sent, recent_keys) -> None:
 
 def test_a_new_notice_is_emailed_even_after_a_recent_email(sent, recent_keys) -> None:
     recent_keys.add("1")
-    notices = _PENDING + [
-        {
-            "source": "e_proceedings",
-            "has_submit_response": True,
-            "response_due_date": "2026-10-25",
-            "din": "9",
-        }
-    ]
+    notices = _PENDING + [{"source": "e_proceedings", "has_submit_response": True, "din": "9"}]
     asyncio.run(
         notice_snapshot.record_notice_outcome(
             _Capture(), _job("completed"), _CLIENT, "e_proceedings", notices=notices

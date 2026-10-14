@@ -49,8 +49,6 @@ DOC_REF_RE = re.compile(
     r"(ITBA/[A-Za-z0-9_./()-]+)",
 )
 _DOC_REF_LABEL_RE = re.compile(r"Document\s+reference\s+ID", re.I)
-_DUE_DATE_LABEL = "Response Due Date"
-_DUE_DATE_LABEL_RE = re.compile(r"Response\s+Due\s+Date\s*:", re.I)
 _MONTHS = {
     "Jan": 1,
     "Feb": 2,
@@ -158,19 +156,11 @@ def ay_display(ay: Any) -> Optional[str]:
     return f"{start}-{(start + 1) % 100:02d}"
 
 
-def _issued_date(issued: Any) -> Optional[date]:
-    if isinstance(issued, date):
-        return issued
-    text = str(issued or "").strip()
-    try:
-        return date.fromisoformat(text[:10])
-    except ValueError:
-        pass
-    return parse_ui_date(text) or epoch_ms_to_date(issued)
-
-
 def notice_sort_key(notice: dict[str, Any]) -> tuple:
-    parsed = _issued_date(notice.get("issued_on"))
+    issued = notice.get("issued_on")
+    if isinstance(issued, date):
+        return (issued.toordinal(), notice.get("din") or "")
+    parsed = parse_ui_date(str(issued or "")) or epoch_ms_to_date(issued)
     return (parsed.toordinal() if parsed else 0, notice.get("din") or "")
 
 
@@ -188,7 +178,7 @@ def map_api_notice(raw: dict[str, Any], *, proceeding: dict[str, Any] | None = N
     is_submitted = str(raw.get("isSubmitted") or "").strip().upper()
     has_submit = is_submitted == "N"
     ay = ay_display(raw.get("ay") or proceeding.get("assessmentYear"))
-    notice = {
+    return {
         "source": SOURCE,
         "din": str(raw.get("documentIdentificationNumber") or "").strip() or None,
         "notice_section": coerce_notice_section(
@@ -212,9 +202,6 @@ def map_api_notice(raw: dict[str, Any], *, proceeding: dict[str, Any] | None = N
         or None,
         "has_submit_response": has_submit,
     }
-    if due is None and str(raw.get("responseDueDate") or "").strip():
-        notice["response_due_date_unreadable"] = True
-    return notice
 
 
 def notices_from_api_payload(payload: Any) -> list[dict[str, Any]]:
@@ -310,20 +297,6 @@ def parse_labeled_field_from_text(card_text: str, label: str) -> Optional[str]:
         return None
     value = re.sub(r"\s+", " ", match.group(1)).strip(" -\t\n\r")
     return value or None
-
-
-def parse_response_due(card_text: str, due_raw: Optional[str]) -> tuple[Optional[date], bool]:
-    """``(due date, unreadable)`` for one notice card.
-
-    With no due date the portal leaves the row out entirely, so a missing label
-    means no due date. A label whose date cannot be read is reported as
-    unreadable rather than treated as missing.
-    """
-    if not due_raw and not _DUE_DATE_LABEL_RE.search(card_text or ""):
-        return None, False
-    raw = due_raw or parse_labeled_field_from_text(card_text, _DUE_DATE_LABEL)
-    due = parse_ui_date(raw or "")
-    return due, due is None
 
 
 async def _labeled_subtitle(card: Locator, label: str) -> Optional[str]:
@@ -435,22 +408,22 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
     )
 
     issued = None
+    due = None
     issued_raw = await _labeled_subtitle(card, "Issued On")
+    due_raw = await _labeled_subtitle(card, "Response Due Date")
     if issued_raw:
         issued = parse_ui_date(issued_raw)
-    if issued is None:
-        # Issued On is the first date on the card. Later dates may be "Last
-        # Response submitted On" or "Response viewed by AO on", not the due date.
-        issued = parse_ui_date(text)
+    if due_raw:
+        due = parse_ui_date(due_raw)
 
-    due, due_unreadable = parse_response_due(
-        text, await _labeled_subtitle(card, _DUE_DATE_LABEL)
-    )
-    if due_unreadable:
-        logger.warning(
-            "notice %s: Response Due Date shown but not readable; counting it as pending",
-            din or doc_ref,
-        )
+    if issued is None:
+        # Fallback: first date in card = issued, second = due
+        dates = [parse_ui_date(m.group(0)) for m in _UI_DATE_RE.finditer(text)]
+        dates = [d for d in dates if d is not None]
+        if dates:
+            issued = dates[0]
+        if due is None and len(dates) > 1:
+            due = dates[1]
 
     has_submit = False
     submit_btn = card.locator("button").filter(has_text=SUBMIT_RESPONSE_RE)
@@ -463,7 +436,7 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
     if not din and not section:
         return None
 
-    notice = {
+    return {
         "source": SOURCE,
         "din": din,
         "notice_section": section,
@@ -476,9 +449,6 @@ async def _parse_notice_card(card: Locator) -> Optional[dict[str, Any]]:
         "proceeding_req_id": None,
         "has_submit_response": has_submit,
     }
-    if due_unreadable:
-        notice["response_due_date_unreadable"] = True
-    return notice
 
 
 async def _proceeding_meta(card: Locator) -> dict[str, Any]:

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
-
 from app.portal.notice_alerts import (
     ADVISOR_FIXABLE_ERRORS,
     actionable_notices,
@@ -45,63 +43,17 @@ def test_no_response_and_extinguished() -> None:
     assert notice_needs_action(gone) is False
 
 
-def _e_notice(*, submit: bool, due: str | None, description: str, **extra) -> dict:
-    return {
-        "source": "e_proceedings",
-        "has_submit_response": submit,
-        "response_due_date": due,
-        "description": description,
-        **extra,
-    }
-
-
-@pytest.mark.parametrize(
-    ("submit", "due", "description", "expected"),
-    [
-        (True, "2026-10-16", "[ITBA]Notice u/s 142(1)of Income Tax Act 1961.", True),
-        (False, "2026-10-16", "[ITBA]Notice u/s 142(1)of Income Tax Act 1961.", False),
-        (True, None, "[ITBA]No Response Letter", True),
-        (False, None, "[ITBA]No Response Letter", False),
-        (True, None, "[ITBA]Issue Letter", False),
-        (False, None, "[ITBA]Issue Letter", False),
-    ],
-)
-def test_e_proceedings_needs_submit_response_and_a_due_date(
-    submit: bool, due: str | None, description: str, expected: bool
-) -> None:
-    notice = _e_notice(submit=submit, due=due, description=description)
-    assert notice_needs_action(notice) is expected
-
-
-def test_143_2_intimation_without_due_date_is_not_action() -> None:
-    notice = _e_notice(
-        submit=True,
-        due=None,
-        description="[ITBA]Intimation and Notice u/s 143(2) of the Income-tax Act, 1961.",
+def test_e_proceedings_uses_submit_response_button() -> None:
+    assert notice_needs_action({"source": "e_proceedings", "has_submit_response": True})
+    assert not notice_needs_action(
+        {"source": "e_proceedings", "has_submit_response": False}
     )
-    assert notice_needs_action(notice) is False
-
-
-def test_no_response_letter_match_ignores_case_and_spacing() -> None:
-    notice = _e_notice(submit=True, due=None, description="  [ITBA]no   RESPONSE\nletter ")
-    assert notice_needs_action(notice) is True
-
-
-def test_unreadable_due_date_still_counts() -> None:
-    notice = _e_notice(
-        submit=True,
-        due=None,
-        description="[ITBA]Issue Letter",
-        response_due_date_unreadable=True,
-    )
-    assert notice_needs_action(notice) is True
 
 
 def test_actionable_notices_keeps_only_pending_responses() -> None:
     rows = [
-        _e_notice(submit=True, due="2026-10-16", description="Notice", din="a"),
-        _e_notice(submit=False, due="2026-10-16", description="Notice", din="b"),
-        _e_notice(submit=True, due=None, description="[ITBA]Issue Letter", din="c"),
+        {"source": "e_proceedings", "has_submit_response": True, "din": "a"},
+        {"source": "e_proceedings", "has_submit_response": False, "din": "b"},
     ]
     assert [row["din"] for row in actionable_notices(rows)] == ["a"]
 
