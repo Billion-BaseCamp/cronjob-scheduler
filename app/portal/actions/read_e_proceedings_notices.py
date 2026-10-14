@@ -1,7 +1,8 @@
 """Harvest e-Proceedings → For your Action notices (UI first, API fallback).
 
 Per proceeding: open View Notices/Orders, keep **latest by issuedOn only**,
-classify Submit Response vs View Response.
+classify Submit Response vs View Response. Proceedings whose latest notice is
+outside the issued-on window (and not still due) are skipped.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator
@@ -28,6 +30,9 @@ from app.portal.notice_diagnosis import attach_summaries
 logger = logging.getLogger(__name__)
 
 SOURCE = "e_proceedings"
+IST = ZoneInfo("Asia/Kolkata")
+# Current month counts as one of these months.
+NOTICE_WINDOW_MONTHS = 6
 
 PROCEEDING_CARD_SELECTOR = (
     ".card-container.matCardRow, .matCardRow, div.card-container.matCardRow"
@@ -179,6 +184,25 @@ def pick_latest_notice(notices: list[dict[str, Any]]) -> Optional[dict[str, Any]
     if not notices:
         return None
     return max(notices, key=notice_sort_key)
+
+
+def notice_window_start(today: date, months: int = NOTICE_WINDOW_MONTHS) -> date:
+    index = today.year * 12 + today.month - 1 - (months - 1)
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def notice_in_window(notice: dict[str, Any], today: date) -> bool:
+    """Issued within the window, or older but its response is still due."""
+    issued = _issued_date(notice.get("issued_on"))
+    if issued is None:
+        logger.warning(
+            "Notice %s has no readable issued date; keeping it", notice.get("din")
+        )
+        return True
+    if issued >= notice_window_start(today):
+        return True
+    due = _issued_date(notice.get("response_due_date"))
+    return due is not None and due >= today
 
 
 def map_api_notice(raw: dict[str, Any], *, proceeding: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -692,6 +716,14 @@ async def _harvest_proceeding(
 
     latest = pick_latest_notice(notices)
     await back_to_e_proceedings_list(page)
+
+    if latest is not None and not notice_in_window(latest, datetime.now(IST).date()):
+        logger.info(
+            "Skipping proceeding %s: latest notice issued %s is outside the window",
+            meta.get("proceeding_name"),
+            latest.get("issued_on"),
+        )
+        latest = None
 
     if latest is None:
         return True, None
