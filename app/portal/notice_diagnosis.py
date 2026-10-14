@@ -7,6 +7,9 @@ from typing import Any, Mapping, Optional
 
 from app.portal.notice_sections import section_short_name
 
+# The only e-Proceedings description that needs a response without a due date.
+NO_RESPONSE_LETTER = "no response letter"
+
 
 def _parse_iso_date(value: Any) -> Optional[date]:
     if value is None:
@@ -47,6 +50,30 @@ def format_inr(amount: Any) -> str:
             groups.insert(0, head)
         digits = ",".join(groups + [tail])
     return f"{sign}₹{digits}"
+
+
+def _is_no_response_letter(description: Any) -> bool:
+    return NO_RESPONSE_LETTER in " ".join(str(description or "").split()).lower()
+
+
+def notice_needs_action(notice: Mapping[str, Any]) -> bool:
+    """Response still pending. Pending Payment after a filed response does not count.
+
+    e-Proceedings: Submit Response counts only with a Response Due Date, or for a
+    "No Response Letter". A due-date label the scraper could not read counts too,
+    so a parse failure never hides a notice.
+    """
+    source = (notice.get("source") or "").strip()
+    if source == "outstanding_demand" or "is_extinguished" in notice:
+        if notice.get("is_extinguished"):
+            return False
+        actions = notice.get("actions") or {}
+        return bool(actions.get("submit_response"))
+    if not notice.get("has_submit_response"):
+        return False
+    if notice.get("response_due_date") or notice.get("response_due_date_unreadable"):
+        return True
+    return _is_no_response_letter(notice.get("description"))
 
 
 def diagnose_outstanding_demand(demand: Mapping[str, Any]) -> str:
@@ -93,11 +120,16 @@ def diagnose_notice(notice: Mapping[str, Any]) -> str:
     )
     due = _parse_iso_date(notice.get("response_due_date"))
     due_label = due.strftime("%d-%b-%Y") if due else "unknown date"
-    actionable = bool(notice.get("has_submit_response"))
+    actionable = notice_needs_action(notice)
     source = (notice.get("source") or "e_proceedings").strip()
     us = f"u/s {section}" if section != "notice" else "notice"
 
     if source == "e_proceedings":
+        if not actionable and notice.get("has_submit_response"):
+            return (
+                f"{label} {us} shows Submit Response but has no response due date; "
+                "not counted as action required."
+            )
         if actionable:
             # Keep 142(1) wording sharp — highest operational urgency at filing stage.
             if section.upper().startswith("142"):

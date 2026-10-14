@@ -14,7 +14,7 @@ from html import escape
 from typing import Any, Iterable, Mapping, Optional
 from zoneinfo import ZoneInfo
 
-from app.portal.notice_diagnosis import format_inr
+from app.portal.notice_diagnosis import format_inr, notice_needs_action
 
 CRON_REQUESTED_BY = "cron"
 # Scheduled jobs started by hand with --no-email. Queued like cron, never emailed.
@@ -69,17 +69,6 @@ _TD_STYLE = "border:1px solid #d1d5db;padding:6px 8px;vertical-align:top;"
 _NOWRAP = "white-space:nowrap;"
 _OVERDUE_STYLE = "color:#b91c1c;font-weight:bold;"
 _DUE_SOON_STYLE = "color:#b45309;font-weight:bold;"
-
-
-def notice_needs_action(notice: Mapping[str, Any]) -> bool:
-    """Response still pending. Pending Payment after a filed response does not count."""
-    source = (notice.get("source") or "").strip()
-    if source == "outstanding_demand" or "is_extinguished" in notice:
-        if notice.get("is_extinguished"):
-            return False
-        actions = notice.get("actions") or {}
-        return bool(actions.get("submit_response"))
-    return bool(notice.get("has_submit_response"))
 
 
 def actionable_notices(notices: list[Mapping[str, Any]] | None) -> list[Mapping[str, Any]]:

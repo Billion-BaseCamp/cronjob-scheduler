@@ -11,12 +11,17 @@ from app.portal.actions.read_e_proceedings_notices import (
     notices_from_api_payload,
     parse_for_your_action_count,
     parse_labeled_field_from_text,
+    parse_response_due,
     parse_total_pages,
     parse_ui_date,
     pick_latest_notice,
     proceedings_gap,
 )
-from app.portal.notice_diagnosis import attach_summaries, diagnose_notice
+from app.portal.notice_diagnosis import (
+    attach_summaries,
+    diagnose_notice,
+    notice_needs_action,
+)
 
 
 def test_parse_ui_date() -> None:
@@ -40,6 +45,122 @@ def test_parse_description_from_card_text() -> None:
     assert (
         parse_labeled_field_from_text(card_text, "Response Due Date") == "23-Sep-2026"
     )
+
+
+# Card text as on the portal; the due-date row is left out when there is no due date.
+_NO_RESPONSE_LETTER_CARD = (
+    "Notice/ Communication Reference ID : 900000000001 "
+    "Notice u/s ITBA/AST/F/17/2026-27/9000000001(1) Document reference ID "
+    "Description :  [ITBA]No Response Letter "
+    "Issued On :  05-Mar-2026 "
+    "Submit Response Notice/Letter pdf Seek/View Adjournment"
+)
+_RESPONDED_ISSUE_LETTER_CARD = (
+    "Notice/ Communication Reference ID : 900000000002 "
+    "Description :  [ITBA]Issue Letter "
+    "Issued On :  22-Sep-2026 "
+    "Response viewed by AO on :  26-Sep-2026 "
+    "View Response"
+)
+
+
+def test_no_response_letter_description_from_card_text() -> None:
+    assert (
+        parse_labeled_field_from_text(_NO_RESPONSE_LETTER_CARD, "Description")
+        == "[ITBA]No Response Letter"
+    )
+
+
+def test_card_without_due_date_row_has_no_due_date() -> None:
+    assert parse_response_due(_NO_RESPONSE_LETTER_CARD, None) == (None, False)
+
+
+def test_later_dates_on_card_are_not_the_due_date() -> None:
+    assert parse_response_due(_RESPONDED_ISSUE_LETTER_CARD, None) == (None, False)
+
+
+def test_due_date_from_label_or_card_text() -> None:
+    card = "Issued On :  09-Oct-2026 Response Due Date :  16-Oct-2026 "
+    assert parse_response_due(card, " 16-Oct-2026 ") == (date(2026, 10, 16), False)
+    assert parse_response_due(card, None) == (date(2026, 10, 16), False)
+
+
+def test_due_date_label_without_a_readable_date_is_unreadable() -> None:
+    assert parse_response_due("Response Due Date :  soon ", None) == (None, True)
+    assert parse_response_due("", "16/10/26") == (None, True)
+
+
+def test_map_api_notice_flags_unreadable_due_date() -> None:
+    raw = {
+        "documentIdentificationNumber": "900000000003",
+        "issuedOn": 1789559356000,
+        "responseDueDate": "not a date",
+        "isSubmitted": "N",
+    }
+    mapped = map_api_notice(raw)
+    assert mapped["response_due_date"] is None
+    assert mapped["response_due_date_unreadable"] is True
+    assert notice_needs_action(mapped) is True
+
+
+def test_map_api_notice_without_due_date_is_not_action() -> None:
+    mapped = map_api_notice(
+        {
+            "documentIdentificationNumber": "900000000004",
+            "description": "[ITBA]Issue Letter",
+            "issuedOn": 1789559356000,
+            "isSubmitted": "N",
+        }
+    )
+    assert mapped["has_submit_response"] is True
+    assert "response_due_date_unreadable" not in mapped
+    assert notice_needs_action(mapped) is False
+
+
+def test_latest_notice_with_due_date_keeps_proceeding_actionable() -> None:
+    notices = [
+        {
+            "source": "e_proceedings",
+            "din": "900000000011",
+            "description": "[ITBA]Notice u/s 142(1)of Income Tax Act 1961.",
+            "issued_on": "2026-10-09",
+            "response_due_date": "2026-10-16",
+            "has_submit_response": True,
+        },
+        {
+            "source": "e_proceedings",
+            "din": "900000000012",
+            "description": "[ITBA]Issue Letter",
+            "issued_on": "2026-09-22",
+            "response_due_date": None,
+            "has_submit_response": False,
+        },
+        {
+            "source": "e_proceedings",
+            "din": "900000000013",
+            "description": "[ITBA]Intimation and Notice u/s 143(2) of the Income-tax Act, 1961.",
+            "issued_on": "2026-06-20",
+            "response_due_date": None,
+            "has_submit_response": True,
+        },
+    ]
+    latest = pick_latest_notice(notices)
+    assert latest is not None and latest["din"] == "900000000011"
+    assert notice_needs_action(latest) is True
+    assert notice_needs_action(notices[2]) is False
+
+
+def test_diagnose_submit_response_without_due_date() -> None:
+    summary = diagnose_notice(
+        {
+            "source": "e_proceedings",
+            "notice_section": "17",
+            "description": "[ITBA]Issue Letter",
+            "has_submit_response": True,
+        }
+    )
+    assert "no response due date" in summary
+    assert "not counted" in summary
 
 
 def test_epoch_ms_to_date() -> None:
@@ -79,6 +200,16 @@ def test_pick_latest_notice_only() -> None:
     latest = pick_latest_notice(notices)
     assert latest is not None
     assert latest["din"] == "100120049489"
+
+
+def test_pick_latest_notice_uses_issued_date_not_din() -> None:
+    notices = [
+        {"din": "900000000099", "issued_on": "2026-06-20"},
+        {"din": "900000000001", "issued_on": "2026-10-09"},
+        {"din": "900000000050", "issued_on": "05-Mar-2026"},
+    ]
+    latest = pick_latest_notice(notices)
+    assert latest is not None and latest["din"] == "900000000001"
 
 
 def test_map_api_notice_actionable() -> None:
