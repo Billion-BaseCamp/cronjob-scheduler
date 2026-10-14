@@ -299,7 +299,7 @@ def parse_labeled_field_from_text(card_text: str, label: str) -> Optional[str]:
     """Pull value after ``Label :`` from flat card text (unit-testable fallback)."""
     next_labels = (
         r"Description|Issued On|Response Due Date|"
-        r"Last Response(?:\s+submitted\s+On)?"
+        r"Last Response(?:\s+submitted\s+On)?|Response viewed by AO on"
     )
     pattern = re.compile(
         rf"{re.escape(label)}\s*:\s*(.+?)(?=(?:{next_labels})\s*:|\Z)",
