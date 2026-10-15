@@ -154,6 +154,21 @@ def test_manual_check_email_has_no_cadence() -> None:
     assert "monthly" not in html
 
 
+def test_greeting_is_separated_from_the_check_line() -> None:
+    _subject, text, html = render_action_required_email(
+        client_name="Rahul Sharma",
+        pan="ABCDE1234F",
+        source="e_proceedings",
+        notices=[{"source": "e_proceedings", "din": "1", "has_submit_response": True}],
+        advisor_first_name="Priya",
+        checked_at=datetime(2026, 10, 7, 6, 0, tzinfo=timezone.utc),
+        scheduled=False,
+    )
+    assert text.startswith("Hi Priya,\n\nAn Income Tax portal check")
+    assert '<p style="margin:0 0 16px;">Hi Priya,</p>' in html
+    assert '<p style="margin:0 0 16px;">An Income Tax portal check' in html
+
+
 _CHECKED = datetime(2026, 10, 8, 6, 0, tzinfo=timezone.utc)
 
 
