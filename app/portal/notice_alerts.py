@@ -57,6 +57,7 @@ _DUE_SOON_DAYS = 3
 
 # Inline only: Outlook and Gmail drop <style> blocks.
 _BODY_STYLE = "font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#111827;"
+_P_STYLE = "margin:0 0 16px;"
 _TABLE_STYLE = (
     "border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;"
     "font-size:13px;margin:8px 0 16px;"
@@ -339,8 +340,7 @@ def render_action_required_email(
     else:
         check = "An Income Tax portal check"
     footer = (
-        f"Checked on {when}. You will be reminded on later checks while a "
-        "response is still pending."
+        f"Checked on {when}."
     )
     text = (
         f"{greeting}\n\n"
@@ -351,11 +351,11 @@ def render_action_required_email(
     )
     html = (
         f'<div style="{_BODY_STYLE}">'
-        f"<p>{escape(greeting)}</p>"
-        f"<p>{escape(check)} for <strong>{escape(client_name)}</strong> "
+        f'<p style="{_P_STYLE}">{escape(greeting)}</p>'
+        f'<p style="{_P_STYLE}">{escape(check)} for <strong>{escape(client_name)}</strong> '
         f"(PAN {escape(mask_pan(pan))}) found {escape(what)}.</p>"
         f"{table}"
-        f"<p>{escape(footer)}</p>"
+        f'<p style="{_P_STYLE}">{escape(footer)}</p>'
         "</div>"
     )
     return subject, text, html
