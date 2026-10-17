@@ -63,9 +63,12 @@ _ACTIVITY_RE = re.compile(
 )
 _RESULT_COUNT_RE = re.compile(r"(\d+)\s+result\(s\)\s+found", re.IGNORECASE)
 
-FILTER_OPEN_SELECTOR = ".filterStyle"
+# The year list's Filter control is this button, not .filterStyle.
+# .filterStyle exists only in the page stylesheet.
+FILTER_OPEN_SELECTOR = "button.filterIcon"
 FILTER_APPLY_SELECTOR = 'button[name="searchValue"]'
-FILTER_PANEL_SELECTOR = ".filterCardStyle"
+YEAR_SELECT_SELECTOR = 'mat-select[formcontrolname="year"]'
+YEAR_OPTION_SELECTOR = '.mat-mdc-select-panel[aria-multiselectable="true"] mat-option'
 ACTIVITY_SELECTOR = "app-filed-form-activity-status"
 YEAR_LIST_SELECTOR = "app-filed-form-ass-year-det"
 FORMS_PAGE_SELECTOR = "app-view-filed-forms"
@@ -198,48 +201,46 @@ def activity_result(text: str, requested_ay: str) -> dict[str, object]:
 
 
 async def _option_checked(option: Locator) -> bool:
+    """Multi-select rows use aria-selected and a pseudo checkbox, not an input."""
+    if (await option.get_attribute("aria-selected")) == "true":
+        return True
     box = option.locator("input.mdc-checkbox__native-control")
     if await box.count():
         return await box.first.is_checked()
-    return (await option.get_attribute("aria-selected")) == "true"
+    return False
 
 
 async def _dismiss_year_overlay(page: Page) -> None:
-    label = page.locator(".filterCardStyle").get_by_text("Assessment Year", exact=True)
+    """Close the year list. The Filter button stays blocked while it is open."""
+    label = page.locator("mat-label.filterLabel").filter(has_text="Assessment Year")
     try:
         if await label.count():
-            await label.first.click(timeout=3_000)
+            await label.first.click(timeout=3_000, force=True)
     except PlaywrightError:
         logger.info("Assessment Year label click did not close the list")
     try:
         await page.keyboard.press("Escape")
     except PlaywrightError:
         pass
-    backdrop = page.locator(".cdk-overlay-backdrop")
-    if await backdrop.count() == 0:
-        return
-    if await backdrop.last.is_visible():
-        await backdrop.last.click()
-        try:
-            await backdrop.last.wait_for(state="hidden", timeout=5_000)
-        except PlaywrightTimeoutError:
-            logger.info("Year dropdown backdrop stayed visible")
+    panel = page.locator(YEAR_OPTION_SELECTOR)
+    try:
+        if await panel.count():
+            await panel.first.wait_for(state="hidden", timeout=5_000)
+    except PlaywrightTimeoutError:
+        logger.info("Assessment year list stayed open")
 
 
 async def _select_only_year(page: Page, ay: str) -> None:
-    field = page.locator(".filterCardStyle mat-form-field").filter(
-        has_text="Assessment Year"
-    )
-    select = field.locator("mat-select").first
+    select = page.locator(YEAR_SELECT_SELECTOR).filter(visible=True).first
     await select.wait_for(state="visible", timeout=_FILTER_TIMEOUT_MS)
-    await select.click()
-    options = page.locator("mat-option")
+    await select.click(force=True)
+    options = page.locator(YEAR_OPTION_SELECTOR)
     await options.first.wait_for(state="visible", timeout=_FILTER_TIMEOUT_MS)
     count = await options.count()
     found = False
     target_checked = False
     for index in range(count):
-        options = page.locator("mat-option")
+        options = page.locator(YEAR_OPTION_SELECTOR)
         if await options.count() <= index:
             break
         option = options.nth(index)
@@ -252,30 +253,35 @@ async def _select_only_year(page: Page, ay: str) -> None:
             if wanted:
                 target_checked = True
             continue
-        await option.click()
+        await option.click(force=True)
         if wanted:
             target_checked = True
-        if await page.locator("mat-option").count() == 0:
+        if await page.locator(YEAR_OPTION_SELECTOR).count() == 0:
             break
     if not found or not target_checked:
         raise PlaywrightTimeoutError(f"Assessment year {ay} is not in the filter")
-    if await page.locator("mat-option").count():
+    if await page.locator(YEAR_OPTION_SELECTOR).count():
         await _dismiss_year_overlay(page)
 
 
 async def _apply_ay_filter(page: Page, ay: str) -> bool:
     try:
         logger.info("Opening Form 67 filter for A.Y. %s", ay)
-        await page.locator(FILTER_OPEN_SELECTOR).first.click()
-        await page.locator(FILTER_PANEL_SELECTOR).wait_for(
+        open_btn = (
+            page.locator(YEAR_LIST_SELECTOR)
+            .locator(FILTER_OPEN_SELECTOR)
+            .filter(visible=True)
+        )
+        await open_btn.first.click(force=True, timeout=_FILTER_TIMEOUT_MS)
+        await page.locator(YEAR_SELECT_SELECTOR).filter(visible=True).first.wait_for(
             state="visible",
             timeout=_FILTER_TIMEOUT_MS,
         )
         await _select_only_year(page, ay)
         logger.info("Applying Form 67 filter")
-        apply_btn = page.locator(FILTER_APPLY_SELECTOR)
-        await apply_btn.click(timeout=_FILTER_TIMEOUT_MS)
-        await page.locator(FILTER_PANEL_SELECTOR).wait_for(
+        apply_btn = page.locator(FILTER_APPLY_SELECTOR).filter(visible=True)
+        await apply_btn.first.click(timeout=_FILTER_TIMEOUT_MS)
+        await page.locator(YEAR_SELECT_SELECTOR).first.wait_for(
             state="hidden",
             timeout=_FILTER_TIMEOUT_MS,
         )
