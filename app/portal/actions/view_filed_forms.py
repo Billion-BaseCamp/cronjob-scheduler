@@ -32,14 +32,16 @@ logger = logging.getLogger(__name__)
 _MENU_TIMEOUT_MS = 20_000
 _PAGE_TIMEOUT_MS = 20_000
 _FORM67_NAME = re.compile(r"^\s*Form\s+67\s*$")
-# Same click path as View Filed Returns. A force click on the parent
-# closes the flyout in headless Chrome, so View Filed Forms never appears.
-INCOME_TAX_FORMS_SELECTOR = (
-    'button.mat-mdc-menu-item:has-text("Income Tax Forms")'
-)
-VIEW_FILED_FORMS_SELECTOR = (
-    'button.mat-mdc-menu-item:has-text("View Filed Forms")'
-)
+
+
+def _visible_menuitem(page: Page, name: str):
+    """Exact visible row. has-text also matches File Income Tax Forms."""
+    return (
+        page.locator(".cdk-overlay-container")
+        .get_by_role("menuitem", name=name, exact=True)
+        .filter(visible=True)
+        .last
+    )
 
 
 async def _click_view_filed_forms(page: Page) -> None:
@@ -47,13 +49,13 @@ async def _click_view_filed_forms(page: Page) -> None:
     await page.locator(E_FILE_SELECTOR).click()
 
     logger.info("Opening Income Tax Forms")
-    forms_item = page.locator(INCOME_TAX_FORMS_SELECTOR)
+    forms_item = _visible_menuitem(page, "Income Tax Forms")
     await forms_item.wait_for(state="visible", timeout=_MENU_TIMEOUT_MS)
     await forms_item.hover()
     await forms_item.click()
 
     logger.info("Clicking View Filed Forms")
-    filed_item = page.locator(VIEW_FILED_FORMS_SELECTOR)
+    filed_item = _visible_menuitem(page, "View Filed Forms")
     await filed_item.wait_for(state="visible", timeout=_MENU_TIMEOUT_MS)
     await filed_item.click()
 
