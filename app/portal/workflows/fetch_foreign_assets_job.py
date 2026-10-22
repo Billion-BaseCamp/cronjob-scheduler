@@ -25,6 +25,11 @@ from app.portal.actions.logout import run_logout
 from app.portal.actions.open_foreign_assets import open_foreign_assets
 from app.portal.actions.read_my_profile import read_my_profile
 from app.portal.evidence import PdfUploadError, upload_pdf, upload_screenshot
+from app.portal.foreign_asset_status import (
+    drop_replaced_keys,
+    keys_to_replace,
+    remember_foreign_asset_year,
+)
 from app.portal.evidence_step import (
     EVIDENCE_FOREIGN_ASSETS,
     EVIDENCE_LOGIN,
@@ -34,6 +39,7 @@ from app.portal.evidence_step import (
 from app.portal.foreign_assets import (
     calendar_years_from_job,
     foreign_assets_password,
+    foreign_assets_pdf_key,
     normalize_pan,
 )
 from app.portal.store import get_client
@@ -129,9 +135,14 @@ async def _fail_after_login(
     _merge_result(job, payload)
 
 
-async def _store_pdf(job, year: int, pdf: bytes) -> dict[str, Any]:
+async def _store_pdf(db, job, year: int, pdf: bytes) -> dict[str, Any]:
     try:
-        key = await upload_pdf(job.id, year, pdf)
+        previous = await keys_to_replace(
+            db, job.client_id, year, foreign_assets_pdf_key(job.client_id, year)
+        )
+        key = await upload_pdf(
+            job.client_id, year, pdf, replace_keys=previous
+        )
     except PdfUploadError as exc:
         return {
             "calendar_year": year,
@@ -264,7 +275,7 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
                 downloaded = await download_foreign_assets_year(ais_page, year)
                 pdf = downloaded.pop("pdf", None)
                 if downloaded.get("status") == "downloaded":
-                    downloaded = await _store_pdf(job, year, pdf or b"")
+                    downloaded = await _store_pdf(db, job, year, pdf or b"")
                 if downloaded.get("status") == "page_drift":
                     await _fail_after_login(
                         job,
@@ -283,6 +294,20 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
                     )
                     return
                 saved.append(downloaded)
+                if downloaded.get("status") in {"downloaded", "no_data", "year_not_in_dropdown"}:
+                    if downloaded.get("status") != "downloaded":
+                        await drop_replaced_keys(
+                            await keys_to_replace(db, job.client_id, year, "")
+                        )
+                    await remember_foreign_asset_year(
+                        db,
+                        client_id=job.client_id,
+                        calendar_year=year,
+                        status=str(downloaded.get("status")),
+                        job_id=job.id,
+                        s3_key=downloaded.get("s3_key"),
+                        pdf_password=password if downloaded.get("status") == "downloaded" else None,
+                    )
                 if downloaded.get("status") == "failed":
                     await _fail_after_login(
                         job,

@@ -27,6 +27,8 @@ async def launch_portal_page(playwright: Any) -> tuple[Any, Any]:
         "args": ["--disable-blink-features=AutomationControlled"],
         "ignore_default_args": ["--enable-automation"],
     }
+    if not settings.PLAYWRIGHT_HEADLESS:
+        launch_kwargs["slow_mo"] = 400
     try:
         browser = await playwright.chromium.launch(channel="chrome", **launch_kwargs)
         logger.info("Launched installed Google Chrome")

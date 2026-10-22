@@ -48,8 +48,14 @@ def test_download_dialogs_branch_on_the_sentence() -> None:
 
 
 def test_pdf_key_and_year_list() -> None:
+    from app.portal.foreign_assets import legacy_foreign_assets_pdf_key
+
     job_id = uuid4()
-    assert foreign_assets_pdf_key(job_id, 2024) == (
+    client_id = uuid4()
+    assert foreign_assets_pdf_key(client_id, 2024) == (
+        f"portal-automation/foreign-assets/{client_id}/CY-2024.pdf"
+    )
+    assert legacy_foreign_assets_pdf_key(job_id, 2024) == (
         f"portal-automation/{job_id}/foreign-assets/CY-2024.pdf"
     )
     preferred = SimpleNamespace(

@@ -84,7 +84,12 @@ def classify_download_dialog(text: str | None) -> str:
     return "unknown"
 
 
-def foreign_assets_pdf_key(job_id: UUID | str, calendar_year: int) -> str:
+def foreign_assets_pdf_key(client_id: UUID | str, calendar_year: int) -> str:
+    """One object per client and year. The next download overwrites it."""
+    return f"portal-automation/foreign-assets/{client_id}/CY-{calendar_year}.pdf"
+
+
+def legacy_foreign_assets_pdf_key(job_id: UUID | str, calendar_year: int) -> str:
     return f"portal-automation/{job_id}/foreign-assets/CY-{calendar_year}.pdf"
 
 

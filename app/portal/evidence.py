@@ -78,10 +78,25 @@ async def upload_screenshot(job_id: UUID | str, step_name: str, png: bytes) -> s
     return key
 
 
-async def upload_pdf(job_id: UUID | str, calendar_year: int, pdf: bytes) -> str:
-    """Store one password-protected foreign-assets PDF. Raises PdfUploadError."""
+def _delete_object(bucket: str, key: str) -> None:
+    client = boto3.client("s3", region_name=settings.S3_REGION)
+    client.delete_object(Bucket=bucket, Key=key)
+
+
+async def upload_pdf(
+    client_id: UUID | str,
+    calendar_year: int,
+    pdf: bytes,
+    *,
+    replace_keys: list[str] | None = None,
+) -> str:
+    """Store one password-protected foreign-assets PDF. Raises PdfUploadError.
+
+    ``replace_keys`` are older copies of this year. They are removed after the
+    new object is stored.
+    """
     bucket = (settings.S3_BUCKET_NAME or "").strip()
-    key = foreign_assets_pdf_key(job_id, calendar_year)
+    key = foreign_assets_pdf_key(client_id, calendar_year)
     if not bucket:
         raise PdfUploadError("S3 bucket is not configured.")
     try:
@@ -99,4 +114,11 @@ async def upload_pdf(job_id: UUID | str, calendar_year: int, pdf: bytes) -> str:
             f"Could not store the C.Y. {calendar_year} PDF."
         ) from exc
     logger.info("Uploaded foreign-assets PDF s3://%s/%s", bucket, key)
+    for old in replace_keys or []:
+        if not old or old == key or ".." in old or not old.startswith("portal-automation/"):
+            continue
+        try:
+            await asyncio.to_thread(_delete_object, bucket, old)
+        except Exception:
+            logger.warning("Could not delete replaced foreign-assets PDF %s", old)
     return key
