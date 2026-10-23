@@ -51,6 +51,7 @@ DOC_REF_RE = re.compile(
 _DOC_REF_LABEL_RE = re.compile(r"Document\s+reference\s+ID", re.I)
 _DUE_DATE_LABEL = "Response Due Date"
 _DUE_DATE_LABEL_RE = re.compile(r"Response\s+Due\s+Date\s*:", re.I)
+_BLANK_DUE_RE = re.compile(r"^[\s\-–—]*$")
 _MONTHS = {
     "Jan": 1,
     "Feb": 2,
@@ -184,7 +185,9 @@ def pick_latest_notice(notices: list[dict[str, Any]]) -> Optional[dict[str, Any]
 def map_api_notice(raw: dict[str, Any], *, proceeding: dict[str, Any] | None = None) -> dict[str, Any]:
     proceeding = proceeding or {}
     issued = epoch_ms_to_date(raw.get("issuedOn"))
-    due = epoch_ms_to_date(raw.get("responseDueDate"))
+    due_raw = raw.get("responseDueDate")
+    due_blank = due_raw is None or _BLANK_DUE_RE.fullmatch(str(due_raw)) is not None
+    due = None if due_blank else epoch_ms_to_date(due_raw)
     is_submitted = str(raw.get("isSubmitted") or "").strip().upper()
     has_submit = is_submitted == "N"
     ay = ay_display(raw.get("ay") or proceeding.get("assessmentYear"))
@@ -212,7 +215,7 @@ def map_api_notice(raw: dict[str, Any], *, proceeding: dict[str, Any] | None = N
         or None,
         "has_submit_response": has_submit,
     }
-    if due is None and str(raw.get("responseDueDate") or "").strip():
+    if due is None and not due_blank:
         notice["response_due_date_unreadable"] = True
     return notice
 
@@ -315,14 +318,19 @@ def parse_labeled_field_from_text(card_text: str, label: str) -> Optional[str]:
 def parse_response_due(card_text: str, due_raw: Optional[str]) -> tuple[Optional[date], bool]:
     """``(due date, unreadable)`` for one notice card.
 
-    With no due date the portal leaves the row out entirely, so a missing label
-    means no due date. A label whose date cannot be read is reported as
-    unreadable rather than treated as missing.
+    A missing label, or a label whose value is only "-", means no due date.
+    Any other value that is not a date is unreadable.
     """
-    if not due_raw and not _DUE_DATE_LABEL_RE.search(card_text or ""):
+    if due_raw is None and not _DUE_DATE_LABEL_RE.search(card_text or ""):
         return None, False
-    raw = due_raw or parse_labeled_field_from_text(card_text, _DUE_DATE_LABEL)
-    due = parse_ui_date(raw or "")
+    raw = (
+        due_raw
+        if due_raw is not None
+        else parse_labeled_field_from_text(card_text, _DUE_DATE_LABEL)
+    )
+    if raw is None or _BLANK_DUE_RE.fullmatch(raw):
+        return None, False
+    due = parse_ui_date(raw)
     return due, due is None
 
 
