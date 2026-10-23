@@ -103,7 +103,6 @@ async def remember_foreign_asset_year(
     status: str,
     job_id: UUID,
     s3_key: str | None = None,
-    pdf_password: str | None = None,
 ) -> None:
     """Upsert the year the dashboard shows. A failed download does not replace it."""
     if status not in _KEEP_STATUSES:
@@ -121,17 +120,15 @@ async def remember_foreign_asset_year(
             ClientForeignAssetYear(
                 client_id=client_id,
                 calendar_year=calendar_year,
-                status=status,
-                s3_key=s3_key,
-                pdf_password=pdf_password,
-                job_id=job_id,
+            status=status,
+            s3_key=s3_key,
+            job_id=job_id,
                 fetched_at=_now(),
             )
         )
     else:
         row.status = status
         row.s3_key = s3_key
-        row.pdf_password = pdf_password
         row.job_id = job_id
         row.fetched_at = _now()
     await db.flush()

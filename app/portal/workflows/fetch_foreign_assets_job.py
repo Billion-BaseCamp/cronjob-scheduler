@@ -5,8 +5,8 @@ The year list is the queued job's ``result.calendar_years``, for example
 ``portal_automation_jobs`` to test. Nothing here calls tax-engine or a
 frontend.
 
-The PDF password is the My Profile date. clients.date_of_birth is not read
-and is not updated. A year with no file is completed as no_data. A year
+The My Profile date is recorded on the job and is not written onto the client.
+The PDF password is not stored. A year with no file is completed as no_data. A year
 missing from the dropdown is year_not_in_dropdown. An unknown dialog, a
 missing file, or an S3 failure fails the job; PDFs already stored stay in S3.
 """
@@ -38,7 +38,6 @@ from app.portal.evidence_step import (
 )
 from app.portal.foreign_assets import (
     calendar_years_from_job,
-    foreign_assets_password,
     foreign_assets_pdf_key,
     normalize_pan,
 )
@@ -101,7 +100,6 @@ def _result(
     *,
     logged_out: bool,
     born_on: Any = None,
-    password: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -113,8 +111,6 @@ def _result(
         payload["dry_run"] = True
     if born_on is not None:
         payload["portal_date_of_birth"] = born_on.isoformat()
-    if password:
-        payload["pdf_password"] = password
     return payload
 
 
@@ -242,8 +238,6 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
                     ),
                 )
                 return
-            password = foreign_assets_password(pan, profile.born_on)
-
             job.current_step = STEPS[2]
             opened = await open_foreign_assets(page, pan)
             ais_page = opened.page
@@ -260,17 +254,13 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
                         [],
                         logged_out=False,
                         born_on=profile.born_on,
-                        password=password,
                     ),
                 )
                 return
 
             job.current_step = STEPS[3]
             saved: list[dict[str, Any]] = []
-            base = dict(
-                born_on=profile.born_on,
-                password=password,
-            )
+            base = dict(born_on=profile.born_on)
             for year in years:
                 downloaded = await download_foreign_assets_year(ais_page, year)
                 pdf = downloaded.pop("pdf", None)
@@ -306,7 +296,6 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
                         status=str(downloaded.get("status")),
                         job_id=job.id,
                         s3_key=downloaded.get("s3_key"),
-                        pdf_password=password if downloaded.get("status") == "downloaded" else None,
                     )
                 if downloaded.get("status") == "failed":
                     await _fail_after_login(
