@@ -94,7 +94,7 @@ def test_due_date_label_without_a_readable_date_is_unreadable() -> None:
     assert parse_response_due("", "16/10/26") == (None, True)
 
 
-def test_unreadable_due_date_does_not_take_the_ao_viewed_date() -> None:
+def test_dash_due_date_is_no_due_date() -> None:
     card = (
         "Issued On :  22-Sep-2026 "
         "Response Due Date :  - "
@@ -102,7 +102,9 @@ def test_unreadable_due_date_does_not_take_the_ao_viewed_date() -> None:
         "View Response"
     )
     assert parse_labeled_field_from_text(card, "Response Due Date") is None
-    assert parse_response_due(card, None) == (None, True)
+    assert parse_response_due(card, None) == (None, False)
+    assert parse_response_due(card, "-") == (None, False)
+    assert parse_response_due(card, " — ") == (None, False)
 
 
 def test_map_api_notice_flags_unreadable_due_date() -> None:
@@ -128,6 +130,21 @@ def test_map_api_notice_without_due_date_is_not_action() -> None:
         }
     )
     assert mapped["has_submit_response"] is True
+    assert "response_due_date_unreadable" not in mapped
+    assert notice_needs_action(mapped) is False
+
+
+def test_map_api_notice_dash_due_date_is_not_action() -> None:
+    mapped = map_api_notice(
+        {
+            "documentIdentificationNumber": "900000000005",
+            "description": "[ITBA]Issue Letter",
+            "issuedOn": 1789559356000,
+            "responseDueDate": "-",
+            "isSubmitted": "N",
+        }
+    )
+    assert mapped["response_due_date"] is None
     assert "response_due_date_unreadable" not in mapped
     assert notice_needs_action(mapped) is False
 
