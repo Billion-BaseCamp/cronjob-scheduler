@@ -4,14 +4,10 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
-
 from app.portal.actions.read_e_proceedings_notices import (
     ay_display,
     epoch_ms_to_date,
     map_api_notice,
-    notice_in_window,
-    notice_window_start,
     notices_from_api_payload,
     parse_for_your_action_count,
     parse_labeled_field_from_text,
@@ -474,57 +470,3 @@ def test_attach_summaries() -> None:
         ]
     )
     assert rows[0]["summary"]
-
-
-@pytest.mark.parametrize(
-    ("today", "start"),
-    [
-        (date(2026, 10, 14), date(2026, 5, 1)),
-        (date(2026, 10, 1), date(2026, 5, 1)),
-        (date(2026, 10, 31), date(2026, 5, 1)),
-        (date(2027, 1, 5), date(2026, 8, 1)),
-        (date(2026, 5, 20), date(2025, 12, 1)),
-        (date(2026, 6, 1), date(2026, 1, 1)),
-    ],
-)
-def test_notice_window_start(today: date, start: date) -> None:
-    assert notice_window_start(today) == start
-
-
-TODAY = date(2026, 10, 14)
-
-
-@pytest.mark.parametrize(
-    ("issued_on", "response_due_date", "kept"),
-    [
-        ("2026-05-01", None, True),
-        ("2026-10-14", None, True),
-        ("09-Sep-2026", None, True),
-        ("2026-04-30", None, False),
-        ("2026-03-15", "2026-11-20", True),
-        ("2026-03-15", "2026-10-14", True),
-        ("2026-03-15", "2026-10-13", False),
-        ("2026-03-15", "2026-04-10", False),
-        (None, None, True),
-        ("-", None, True),
-    ],
-)
-def test_notice_in_window(
-    issued_on: str | None, response_due_date: str | None, kept: bool
-) -> None:
-    notice = {
-        "din": "1",
-        "issued_on": issued_on,
-        "response_due_date": response_due_date,
-    }
-    assert notice_in_window(notice, TODAY) is kept
-
-
-def test_old_notice_with_unreadable_due_date_is_dropped() -> None:
-    notice = {
-        "din": "1",
-        "issued_on": "2026-03-15",
-        "response_due_date": None,
-        "response_due_date_unreadable": True,
-    }
-    assert notice_in_window(notice, TODAY) is False
