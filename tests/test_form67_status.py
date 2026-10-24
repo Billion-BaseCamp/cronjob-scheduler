@@ -7,6 +7,7 @@ from app.portal.actions.read_form67_status import (
     is_successfully_e_verified,
     result_count,
 )
+from app.portal.actions.view_filed_forms import is_no_forms_filed_page
 
 _FILED = """
 Statement of income from a country or specified territory outside India and Foreign Tax Credit
@@ -68,6 +69,23 @@ def test_other_status_does_not_set_the_checkbox() -> None:
 
 def test_wrong_year_is_a_mismatch() -> None:
     assert activity_verdict(_FILED, "2025-26") == "mismatch"
+
+
+def test_form_10e_page_is_not_form_67() -> None:
+    text = """
+    Form for furnishing particulars of income under section 192(2A)
+    Form 10E
+    A.Y. 2026-27
+    Filing Date 31-Jul-2026
+    Status : Successfully e-Verified
+    Acknowledgement No : 975657320310726
+    """
+    assert activity_verdict(text, "2026-27") == "mismatch"
+
+
+def test_no_forms_filed_page() -> None:
+    assert is_no_forms_filed_page("View Filed Forms\nNo form filed till date")
+    assert not is_no_forms_filed_page("Form 67\nView All")
 
 
 def test_result_count_and_filing_date() -> None:
