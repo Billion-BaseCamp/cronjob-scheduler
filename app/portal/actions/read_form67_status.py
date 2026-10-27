@@ -330,12 +330,27 @@ async def _open_view_details(card: Locator, page: Page) -> bool:
     return True
 
 
+_LIST_FORM_NAME = re.compile(r"^\s*Form\s+67\s*$", re.IGNORECASE)
+
+
+async def _listed_form_name(page: Page) -> Optional[str]:
+    """Heading on the year list. None when the list does not name a form."""
+    heading = page.locator(YEAR_LIST_SELECTOR).locator(".headFormNameStyle")
+    if await heading.count() == 0:
+        return None
+    return _flat(await heading.first.inner_text())
+
+
 async def read_form67_on_year_list(
     page: Page,
     assessment_year: str,
 ) -> dict[str, object]:
     """Filter the open Form 67 year list and read View Details when a card exists."""
     ay = assessment_year.strip()
+    listed = await _listed_form_name(page)
+    if listed and _LIST_FORM_NAME.match(listed) is None:
+        logger.warning("Opened %s year list instead of Form 67", listed)
+        return _empty_result(ay, details_failed=True)
     if not await _apply_ay_filter(page, ay):
         return _empty_result(ay, filter_failed=True)
 
