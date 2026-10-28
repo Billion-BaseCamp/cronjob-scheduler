@@ -341,16 +341,6 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
                     await run_logout(page)
                 except Exception:
                     logger.exception("Logout after crash failed")
-            if page is not None and not settings.PLAYWRIGHT_HEADLESS:
-                logger.error(
-                    "Paused on the portal page. Press Resume in the "
-                    "Playwright bar to close Chrome. %s",
-                    detail,
-                )
-                try:
-                    await page.pause()
-                except Exception:
-                    logger.exception("Playwright inspector did not open")
             _fail(
                 job,
                 error_code="UNKNOWN",
