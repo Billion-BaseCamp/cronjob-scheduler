@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from typing import Any, Optional
 
 from playwright.async_api import Page
@@ -44,7 +45,17 @@ _KNOWN_STATUS_STATE = {
 }
 
 _CARD_TIMEOUT_MS = 12_000
-_API_WAIT_S = 8.0
+_SETTLE_S = 20.0
+_POLL_S = 0.4
+
+# The empty sentence is in the DOM while the portal spinner is still up.
+# It counts only after that spinner is gone.
+_NO_DEMAND_RE = re.compile(r"no records of outstanding demand found", re.IGNORECASE)
+_LOADING_RE = re.compile(r"^\s*Loading\s*\.{0,3}\s*$")
+_LOADER_SELECTOR = (
+    "mat-spinner, mat-progress-spinner, "
+    ".mat-mdc-progress-spinner, .mat-progress-spinner"
+)
 
 _EXTRACT_CARDS_JS = r"""
 (cards) => cards.map((card) => {
@@ -375,6 +386,79 @@ def _is_outstanding_demand_response(response) -> bool:
         return False
 
 
+def is_no_outstanding_demand_text(text: str) -> bool:
+    return _NO_DEMAND_RE.search(text or "") is not None
+
+
+def demand_page_state(
+    *,
+    has_api: bool,
+    has_cards: bool,
+    page_text: str,
+    loading: bool,
+) -> str:
+    """``records`` when the API or a card is present, ``empty`` when the portal says none.
+
+    ``pending`` while the page is still loading, or when nothing on it can be read.
+    The no-records sentence is ignored until loading is finished.
+    """
+    if has_api or has_cards:
+        return "records"
+    if not loading and is_no_outstanding_demand_text(page_text):
+        return "empty"
+    return "pending"
+
+
+async def _any_visible(locator) -> bool:
+    count = await locator.count()
+    for index in range(min(count, 8)):
+        try:
+            if await locator.nth(index).is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def _visible_text(locator) -> str:
+    count = await locator.count()
+    for index in range(min(count, 8)):
+        item = locator.nth(index)
+        try:
+            if await item.is_visible():
+                return await item.inner_text()
+        except Exception:
+            continue
+    return ""
+
+
+async def _demand_loading(page: Page) -> bool:
+    if await _any_visible(page.locator(_LOADER_SELECTOR)):
+        return True
+    return await _any_visible(page.get_by_text(_LOADING_RE))
+
+
+async def _wait_for_demand_content(page: Page, payloads: list[Any], got_api: asyncio.Event) -> str:
+    """``records``, ``empty``, or ``pending`` once the settle window ends."""
+    deadline = time.monotonic() + _SETTLE_S
+    while True:
+        state = demand_page_state(
+            has_api=bool(payloads),
+            has_cards=await _any_visible(page.locator(DEMAND_CARD_SELECTOR)),
+            page_text=await _visible_text(page.get_by_text(_NO_DEMAND_RE)),
+            loading=await _demand_loading(page),
+        )
+        if state != "pending":
+            return state
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "pending"
+        try:
+            await asyncio.wait_for(got_api.wait(), timeout=min(_POLL_S, remaining))
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _scrape_cards(page: Page) -> list[dict[str, Any]]:
     cards = page.locator(DEMAND_CARD_SELECTOR)
     try:
@@ -414,11 +498,13 @@ async def read_outstanding_demand(page: Page | None) -> NoticeHarvest:
                 notices=[],
                 error="Could not open Response to Outstanding Demand",
             )
-        try:
-            await asyncio.wait_for(got_api.wait(), timeout=_API_WAIT_S)
-        except asyncio.TimeoutError:
+        state = await _wait_for_demand_content(page, payloads, got_api)
+        if state == "empty":
+            logger.info("Outstanding demand page has no records")
+            return NoticeHarvest(source=SOURCE, ok=True, notices=[], scrape_path="ui")
+        dom_rows = [] if state == "pending" else await _scrape_cards(page)
+        if not payloads:
             logger.info("No outstandingDemand XHR captured; relying on DOM")
-        dom_rows = await _scrape_cards(page)
     finally:
         try:
             page.remove_listener("response", _on_response)

@@ -6,7 +6,9 @@ Fixtures mirror live portal payloads and cards; PAN replaced.
 from __future__ import annotations
 
 from app.portal.actions.read_outstanding_demand import (
+    demand_page_state,
     demands_from_api_payload,
+    is_no_outstanding_demand_text,
     journey_from_api,
     map_api_demand,
     map_dom_card,
@@ -331,6 +333,49 @@ def test_merge_keeps_unmatched_rows_from_both_sides() -> None:
     dom_rows = [map_dom_card(DOM_CARDS[3])]
     merged = merge_demands(api_rows, dom_rows)
     assert [row["journey_source"] for row in merged] == ["api", "dom"]
+
+
+def test_no_outstanding_demand_text() -> None:
+    assert is_no_outstanding_demand_text("No records of outstanding demand found")
+    assert is_no_outstanding_demand_text("NO RECORDS OF OUTSTANDING DEMAND FOUND")
+    assert not is_no_outstanding_demand_text(
+        "Records are as per the data available at Income Tax Department"
+    )
+
+
+def test_demand_page_state_empty_only_after_loading() -> None:
+    sentence = "No records of outstanding demand found"
+    assert (
+        demand_page_state(
+            has_api=False, has_cards=False, page_text=sentence, loading=True
+        )
+        == "pending"
+    )
+    assert (
+        demand_page_state(
+            has_api=False, has_cards=False, page_text=sentence, loading=False
+        )
+        == "empty"
+    )
+    assert (
+        demand_page_state(
+            has_api=True, has_cards=False, page_text=sentence, loading=False
+        )
+        == "records"
+    )
+    assert (
+        demand_page_state(has_api=False, has_cards=True, page_text="", loading=True)
+        == "records"
+    )
+    assert (
+        demand_page_state(
+            has_api=False,
+            has_cards=False,
+            page_text="Date of last refresh: 28-Oct-2026",
+            loading=False,
+        )
+        == "pending"
+    )
 
 
 def test_demands_from_api_payload_empty_and_bad() -> None:
