@@ -1,5 +1,8 @@
 """FETCH_FOREIGN_ASSETS: login, read the portal date, download C.Y. PDFs, log out.
 
+Logout signs out of the AIS tab first, then the e-filing tab. A missed AIS
+logout does not fail a job whose PDFs are already saved.
+
 The year list is the queued job's ``result.calendar_years``, for example
 ``{"calendar_years": [2024, 2023]}``. Insert that row in
 ``portal_automation_jobs`` to test. Nothing here calls tax-engine or a
@@ -22,7 +25,7 @@ from app.portal.actions.download_foreign_assets import download_foreign_assets_y
 from app.portal.actions.login import run_login
 from app.portal.actions.login_outcomes import LoginOutcome
 from app.portal.actions.logout import run_logout
-from app.portal.actions.open_foreign_assets import open_foreign_assets
+from app.portal.actions.open_foreign_assets import open_foreign_assets, run_ais_logout
 from app.portal.actions.read_my_profile import read_my_profile
 from app.portal.evidence import PdfUploadError, upload_pdf, upload_screenshot
 from app.portal.foreign_asset_status import (
@@ -101,12 +104,15 @@ def _result(
     logged_out: bool,
     born_on: Any = None,
     dry_run: bool = False,
+    ais_logged_out: bool | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "workflow": workflow,
         "logged_out": logged_out,
         "years": years,
     }
+    if ais_logged_out is not None:
+        payload["ais_logged_out"] = ais_logged_out
     if dry_run:
         payload["dry_run"] = True
     if born_on is not None:
@@ -123,9 +129,12 @@ async def _fail_after_login(
     error_code: str,
     message: str,
     payload: dict[str, Any],
+    ais: Any = None,
 ) -> None:
     await _attach_evidence(job, shot, step_name)
-    logged_out = await run_logout(efiling)
+    if ais is not None:
+        payload = {**payload, "ais_logged_out": await run_ais_logout(ais)}
+    logged_out = await run_logout(None if ais is not None and ais is efiling else efiling)
     payload = {**payload, "logged_out": logged_out}
     _fail(job, error_code=error_code, message=message)
     _merge_result(job, payload)
@@ -255,6 +264,7 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
                         logged_out=False,
                         born_on=profile.born_on,
                     ),
+                    ais=ais_page,
                 )
                 return
 
@@ -281,6 +291,7 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
                             logged_out=False,
                             **base,
                         ),
+                        ais=ais_page,
                     )
                     return
                 saved.append(downloaded)
@@ -312,12 +323,14 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
                             logged_out=False,
                             **base,
                         ),
+                        ais=ais_page,
                     )
                     return
 
             await _attach_evidence(job, ais_page, EVIDENCE_FOREIGN_ASSETS)
             job.current_step = STEPS[4]
-            logged_out = await run_logout(page)
+            ais_logged_out = await run_ais_logout(ais_page)
+            logged_out = await run_logout(None if ais_page is page else page)
             job.status = "completed"
             job.error_code = None
             job.error_message = None
@@ -329,6 +342,7 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
                     workflow,
                     saved,
                     logged_out=logged_out,
+                    ais_logged_out=ais_logged_out,
                     **base,
                 ),
             )
@@ -336,21 +350,13 @@ async def run_fetch_foreign_assets_job(db, job, *, workflow: str) -> None:
             detail = f"{type(exc).__name__}: {exc}"
             logger.exception("%s crashed for job %s: %s", workflow, job.id, detail)
             await _attach_evidence(job, ais_page or page, EVIDENCE_LOGIN)
-            if page is not None:
+            if ais_page is not None:
+                await run_ais_logout(ais_page)
+            if page is not None and page is not ais_page:
                 try:
                     await run_logout(page)
                 except Exception:
                     logger.exception("Logout after crash failed")
-            if page is not None and not settings.PLAYWRIGHT_HEADLESS:
-                logger.error(
-                    "Paused on the portal page. Press Resume in the "
-                    "Playwright bar to close Chrome. %s",
-                    detail,
-                )
-                try:
-                    await page.pause()
-                except Exception:
-                    logger.exception("Playwright inspector did not open")
             _fail(
                 job,
                 error_code="UNKNOWN",

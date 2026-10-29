@@ -3,7 +3,8 @@
 ``a#AIS`` sometimes opens disclaimer ``#annualInformation``; Proceed
 (``#okBtnNav3``) then opens ``ais.insight.gov.in``. A session that already
 accepted the disclaimer opens the compliance portal directly and never
-shows that modal. Either way, the e-filing tab stays open for logout.
+shows that modal. The e-filing tab stays open. Sign out of this
+compliance tab with ``run_ais_logout`` before logging out of e-filing.
 """
 
 from __future__ import annotations
@@ -29,6 +30,14 @@ _SESSION_TIMEOUT_MS = 45_000
 # The Reports anchor also contains the help-tip image alt "Active bulb".
 _REPORTS = re.compile(r"Reports")
 _FOREIGN_ASSETS_HREF = "/complianceportal/reports/foreign-assets-information"
+# Compliance header only. E-filing uses ``button.profileMenubtn``.
+_AIS_LOGOUT_TOGGLE = ".header-profile button#dropdownMenu2"
+_AIS_LOGOUT_ITEM = re.compile(r"^\s*Logout\s*$")
+_AIS_LOGOUT_CONFIRM = re.compile(r"Are you sure you want to Log Out\?")
+_AIS_LOGGED_OUT = re.compile(
+    r"You have been logged out from Compliance Portal!"
+)
+_AIS_LOGOUT_OK = re.compile(r"^\s*Ok\s*$")
 
 
 @dataclass
@@ -131,6 +140,54 @@ async def _session_state(ais: Page, pan: str) -> str:
         logger.warning("AIS header PAN does not match the profile PAN")
         return "mismatch"
     return "ok"
+
+
+async def _click_ais_dialog_ok(page: Page, title: re.Pattern[str]) -> None:
+    """Ok on one compliance ``app-logout-alert``, matched by its title."""
+    dialog = page.locator("mat-dialog-container app-logout-alert").filter(
+        has_text=title
+    )
+    ok = dialog.locator("button.btn-primary").filter(has_text=_AIS_LOGOUT_OK)
+    await ok.first.click(timeout=10_000)
+
+
+async def run_ais_logout(page: Page | None) -> bool:
+    """Sign out of the AIS compliance portal.
+
+    Click the name in ``.header-profile``, then Logout, then Ok on
+    "Are you sure you want to Log Out?", then Ok on
+    "You have been logged out from Compliance Portal!". The header can
+    stay on screen after that. These dialogs are separate from the
+    foreign-assets download prompt. A missed click does not raise.
+    The caller still logs out of e-filing.
+    """
+    if page is None:
+        return False
+    try:
+        await page.bring_to_front()
+        toggle = page.locator(_AIS_LOGOUT_TOGGLE)
+        if await toggle.count() == 0 or not await toggle.first.is_visible():
+            logger.info("AIS profile menu is not on this page url=%s", page.url)
+            return False
+        logger.info("Opening AIS profile menu")
+        await toggle.first.click(timeout=10_000)
+        item = page.locator(
+            '.header-profile [aria-labelledby="dropdownMenu2"] button.dropdown-item'
+        ).filter(has_text=_AIS_LOGOUT_ITEM)
+        logger.info("Clicking AIS Logout")
+        await item.first.click(timeout=10_000)
+        logger.info("Confirming AIS logout")
+        await _click_ais_dialog_ok(page, _AIS_LOGOUT_CONFIRM)
+        logger.info("Dismissing AIS logged-out message")
+        await _click_ais_dialog_ok(page, _AIS_LOGGED_OUT)
+        logger.info("Logged out of AIS url=%s", page.url)
+        return True
+    except PlaywrightTimeout:
+        logger.warning("AIS logout timed out url=%s", getattr(page, "url", ""))
+        return False
+    except Exception:
+        logger.exception("AIS logout failed url=%s", getattr(page, "url", ""))
+        return False
 
 
 async def open_foreign_assets(page: Page, pan: str) -> AisPages:
