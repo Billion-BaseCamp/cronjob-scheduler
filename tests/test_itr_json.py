@@ -114,6 +114,21 @@ def test_card_text_supplies_the_saved_filing() -> None:
     assert parse_e_verified_on(_DETAILS) == "2026-08-06"
 
 
+_PENDING = """
+Pending for e-verification
+Jul 29, 2026
+ITR Filed
+Jul 29, 2026
+"""
+
+
+def test_pending_e_verification_leaves_the_date_empty() -> None:
+    assert parse_e_verified_on(_PENDING) == ""
+    chosen = choose_itr_json_card([_card("Original", 29, has_download_json=True)])
+    assert chosen is not None
+    assert chosen.e_verified_on == ""
+
+
 def test_filing_type_is_the_label_on_the_card() -> None:
     assert parse_filing_type("Filing Type\nOriginal\n") == "Original"
     assert parse_filing_type("Filing Type : Rectification") == "Rectification"
