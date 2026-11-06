@@ -1,9 +1,11 @@
 """Download one ITR JSON from View Filed Returns.
 
 The assessment-year filter and card list match the status scrape. Download
-JSON is the button on the list card, next to View Details. Rectification and
+JSON is clicked on the filtered list, before View Details. Rectification and
 Revised cards that lack the button fall through to the next older card.
-The chosen file is returned as bytes; the job stores it in S3.
+View Details is only for the e-verified date. Back drops the filter, so the
+year is applied again for the evidence shot. That second apply does not fail
+the download. The chosen file is returned as bytes; the job stores it in S3.
 """
 
 from __future__ import annotations
@@ -371,25 +373,6 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
             error_message="Could not return to the filing that has Download JSON.",
         )
 
-    if not chosen.e_verified_on:
-        verified = await _e_verified_from_details(page, chosen, ay)
-        if verified:
-            chosen = replace(chosen, e_verified_on=verified)
-        if chosen.page_index:
-            try:
-                opened = await _open_results_page(page, chosen.page_index, 0)
-            except (PlaywrightTimeoutError, PlaywrightError):
-                opened = False
-            if not opened:
-                return ItrJsonScrape(
-                    assessment_year=ay,
-                    cards=found,
-                    chosen=chosen,
-                    payload=None,
-                    error_code="UI_DRIFT",
-                    error_message="Could not return to the filing that has Download JSON.",
-                )
-
     try:
         payload = await _click_download(page, chosen, ay)
     except (PlaywrightTimeoutError, PlaywrightError):
@@ -413,6 +396,18 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
             error_code="DOWNLOAD_FAILED",
             error_message=f"Download JSON for AY {ay} was not a JSON file.",
         )
+
+    if not chosen.e_verified_on:
+        verified = await _e_verified_from_details(page, chosen, ay)
+        if verified:
+            chosen = replace(chosen, e_verified_on=verified)
+        # Back reloads every year. Apply the year again so the evidence shot
+        # shows this assessment year. The file is already downloaded.
+        if not await _apply_ay_filter(page, ay):
+            logger.warning(
+                "Assessment year filter did not re-apply for the evidence shot"
+            )
+
     return ItrJsonScrape(
         assessment_year=ay,
         cards=found,
