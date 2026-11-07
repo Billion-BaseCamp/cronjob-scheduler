@@ -1,11 +1,12 @@
 """Download one ITR JSON from View Filed Returns.
 
-The assessment-year filter and card list match the status scrape. Download
-JSON is clicked on the filtered list, before View Details. Rectification and
-Revised cards that lack the button fall through to the next older card.
-View Details is only for the e-verified date. Back drops the filter, so the
-year is applied again for the evidence shot. That second apply does not fail
-the download. The chosen file is returned as bytes; the job stores it in S3.
+The list opens on one page. View More is clicked before each year filter so
+every assessment year is available. Download JSON is clicked on the filtered
+list, before View Details. Rectification and Revised cards that lack the
+button fall through to the next older card. View Details is only for the
+e-verified date. Back returns to the one-page list, so View More and the year
+filter run again for the evidence shot. That second pass does not fail the
+download. The chosen file is returned as bytes; the job stores it in S3.
 """
 
 from __future__ import annotations

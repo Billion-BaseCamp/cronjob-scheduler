@@ -5,10 +5,12 @@ portal AY in ``assessment_year`` — use it as-is. Do not FY+1 (that would
 open the next year on the portal).
 
 List page (``#/dashboard/itrStatus``, ``app-itr-status``):
-  1. Open Filter (``button#filterbtn1``)
-  2. Select AY, click Assessment Year label to close the overlay, apply
+  1. Click View More. The list opens on one page, so the year filter
+     does not contain every assessment year until this is clicked.
+  2. Open Filter (``button#filterbtn1``)
+  3. Select AY, click Assessment Year label to close the overlay, apply
      (``button#okButton``)
-  3. Among remaining cards, open View Details on the latest Filing Date
+  4. Among remaining cards, open View Details on the latest Filing Date
 
 Lifecycle page (``app-itr-status-life-cycle``): read Filing Type from
 ``div.ftype mat-label.leftSideVal`` next to the ``Filing Type`` label, and
@@ -227,9 +229,30 @@ async def _select_assessment_year(page: Page, ay: str) -> None:
     await _dismiss_year_overlay(page)
 
 
+async def _click_view_more(page: Page) -> None:
+    """Load every filing. The default list is one page, so the year filter is short."""
+    button = page.get_by_role("button", name=re.compile(r"^\s*View More\s*$"))
+    try:
+        await button.first.wait_for(state="visible", timeout=_FILTER_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        logger.info("View More is not on View Filed Returns")
+        return
+    before = await page.locator(CARD_SELECTOR).count()
+    logger.info("Clicking View More")
+    await button.first.click()
+    for _ in range(20):
+        await page.wait_for_timeout(250)
+        if await page.locator(CARD_SELECTOR).count() > before:
+            return
+        if await button.count() == 0 or not await button.first.is_visible():
+            return
+    logger.info("View More left the filed-return list unchanged")
+
+
 async def _apply_ay_filter(page: Page, assessment_year: str) -> bool:
     ay = assessment_year.strip()
     try:
+        await _click_view_more(page)
         logger.info("Opening Filter for A.Y. %s", ay)
         await page.locator(FILTER_OPEN_SELECTOR).click()
         await page.locator(FILTER_APPLY_SELECTOR).wait_for(
