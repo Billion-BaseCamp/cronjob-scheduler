@@ -31,6 +31,8 @@ from app.portal.actions.read_filed_return_status import (
     LIFECYCLE_SELECTOR,
     STEP_SELECTOR,
     VIEW_DETAILS_SELECTOR,
+    FILTER_APPLIED,
+    FILTER_NOT_LISTED,
     _apply_ay_filter,
     _cards_for_ay,
     no_filing_message,
@@ -319,7 +321,14 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
             error_message=no_filing_message(ay),
         )
 
-    if not await _apply_ay_filter(page, ay):
+    filtered = await _apply_ay_filter(page, ay)
+    if filtered == FILTER_NOT_LISTED:
+        return _empty(
+            ay,
+            error_code=ITR_NOT_FILED,
+            error_message=no_filing_message(ay),
+        )
+    if filtered != FILTER_APPLIED:
         return _empty(
             ay,
             error_code="UI_DRIFT",
@@ -404,7 +413,7 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
             chosen = replace(chosen, e_verified_on=verified)
         # Back reloads every year. Apply the year again so the evidence shot
         # shows this assessment year. The file is already downloaded.
-        if not await _apply_ay_filter(page, ay):
+        if await _apply_ay_filter(page, ay) != FILTER_APPLIED:
             logger.warning(
                 "Assessment year filter did not re-apply for the evidence shot"
             )

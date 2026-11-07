@@ -217,39 +217,145 @@ async def _dismiss_year_overlay(page: Page) -> None:
         await backdrop.last.wait_for(state="hidden", timeout=5_000)
 
 
-async def _select_assessment_year(page: Page, ay: str) -> None:
+_SELECT_PANEL = (
+    ".cdk-overlay-pane .mat-mdc-select-panel, "
+    ".cdk-overlay-pane .mat-select-panel"
+)
+FILTER_APPLIED = "applied"
+FILTER_NOT_LISTED = "not_listed"
+FILTER_FAILED = "failed"
+
+
+def _year_option(page: Page, ay: str) -> Locator:
+    return page.locator("mat-option").filter(
+        has_text=re.compile(rf"^\s*{re.escape(ay)}\s*$")
+    )
+
+
+async def _option_shown(option: Locator) -> bool:
+    try:
+        return await option.count() > 0 and await option.first.is_visible()
+    except PlaywrightError:
+        return False
+
+
+async def _scroll_year_panel(page: Page) -> bool:
+    panel = page.locator(_SELECT_PANEL)
+    if await panel.count() == 0:
+        return False
+    return bool(
+        await panel.first.evaluate(
+            """el => {
+                const before = el.scrollTop;
+                const step = Math.max(el.clientHeight - 8, 40);
+                el.scrollTop = Math.min(el.scrollTop + step, el.scrollHeight);
+                return el.scrollTop !== before;
+            }"""
+        )
+    )
+
+
+async def _close_filter_dialog(page: Page) -> None:
+    try:
+        await page.keyboard.press("Escape")
+    except PlaywrightError:
+        pass
+    try:
+        apply_btn = page.locator(FILTER_APPLY_SELECTOR)
+        if await apply_btn.count() and await apply_btn.first.is_visible():
+            await page.locator(FILTER_OPEN_SELECTOR).click()
+    except PlaywrightError:
+        pass
+
+
+async def _select_assessment_year(page: Page, ay: str) -> bool:
+    """Select the year. False means the open list does not contain it."""
     select = page.locator(AY_SELECT_SELECTOR)
     await select.wait_for(state="visible", timeout=_FILTER_TIMEOUT_MS)
     await select.click()
-    option = page.locator("mat-option").filter(
-        has_text=re.compile(rf"^\s*{re.escape(ay)}\s*$")
-    )
-    await option.first.wait_for(state="visible", timeout=_FILTER_TIMEOUT_MS)
-    await option.first.click()
+    option = _year_option(page, ay)
+    for _ in range(40):
+        if await _option_shown(option):
+            await option.first.click()
+            await _dismiss_year_overlay(page)
+            return True
+        if not await _scroll_year_panel(page):
+            break
+        await page.wait_for_timeout(100)
+    seen: list[str] = []
+    try:
+        nodes = page.locator("mat-option")
+        count = min(await nodes.count(), 40)
+        for index in range(count):
+            text = " ".join((await nodes.nth(index).inner_text()).split())
+            if text:
+                seen.append(text)
+    except PlaywrightError:
+        pass
+    logger.info("A.Y. %s is not in the filter. Options seen: %s", ay, seen)
     await _dismiss_year_overlay(page)
+    return False
+
+
+_VIEW_MORE_RE = re.compile(r"^\s*View\s+More\s*$", re.I)
+
+
+async def _footer_view_more(page: Page) -> Locator | None:
+    """The control next to Back. The View More inside a card only expands that card."""
+    nodes = page.locator("button, a, span").filter(has_text=_VIEW_MORE_RE)
+    count = await nodes.count()
+    for index in range(count):
+        node = nodes.nth(index)
+        try:
+            in_card = await node.evaluate("el => !!el.closest('mat-card')")
+            if in_card or not await node.is_visible():
+                continue
+            text = " ".join((await node.inner_text()).split())
+        except PlaywrightError:
+            continue
+        if text.lower() != "view more":
+            continue
+        return node
+    return None
 
 
 async def _click_view_more(page: Page) -> None:
     """Load every filing. The default list is one page, so the year filter is short."""
-    button = page.get_by_role("button", name=re.compile(r"^\s*View More\s*$"))
-    try:
-        await button.first.wait_for(state="visible", timeout=_FILTER_TIMEOUT_MS)
-    except PlaywrightTimeoutError:
+    button = None
+    for _ in range(20):
+        try:
+            await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+        except PlaywrightError:
+            pass
+        button = await _footer_view_more(page)
+        if button is not None:
+            break
+        await page.wait_for_timeout(500)
+    if button is None:
         logger.info("View More is not on View Filed Returns")
         return
     before = await page.locator(CARD_SELECTOR).count()
     logger.info("Clicking View More")
-    await button.first.click()
-    for _ in range(20):
+    await button.scroll_into_view_if_needed()
+    await button.click()
+    last = before
+    stable = 0
+    for _ in range(40):
         await page.wait_for_timeout(250)
-        if await page.locator(CARD_SELECTOR).count() > before:
+        count = await page.locator(CARD_SELECTOR).count()
+        if count == last:
+            stable += 1
+        else:
+            stable = 0
+            last = count
+        if stable >= 4 and count > before:
+            logger.info("View More loaded %s filed-return cards", count)
             return
-        if await button.count() == 0 or not await button.first.is_visible():
-            return
-    logger.info("View More left the filed-return list unchanged")
+    logger.info("View More left the filed-return list at %s cards", last)
 
 
-async def _apply_ay_filter(page: Page, assessment_year: str) -> bool:
+async def _apply_ay_filter(page: Page, assessment_year: str) -> str:
+    """``applied``, ``not_listed`` when the year is absent, or ``failed``."""
     ay = assessment_year.strip()
     try:
         await _click_view_more(page)
@@ -263,7 +369,9 @@ async def _apply_ay_filter(page: Page, assessment_year: str) -> bool:
             state="visible",
             timeout=_FILTER_TIMEOUT_MS,
         )
-        await _select_assessment_year(page, ay)
+        if not await _select_assessment_year(page, ay):
+            await _close_filter_dialog(page)
+            return FILTER_NOT_LISTED
         logger.info("Applying Filter")
         await page.locator(FILTER_APPLY_SELECTOR).click(
             timeout=_FILTER_TIMEOUT_MS
@@ -272,16 +380,11 @@ async def _apply_ay_filter(page: Page, assessment_year: str) -> bool:
             state="hidden",
             timeout=_FILTER_TIMEOUT_MS,
         )
-        return True
+        return FILTER_APPLIED
     except (PlaywrightTimeoutError, PlaywrightError):
         logger.warning("Assessment Year filter did not complete", exc_info=True)
-        try:
-            apply_btn = page.locator(FILTER_APPLY_SELECTOR)
-            if await apply_btn.count() and await apply_btn.first.is_visible():
-                await page.locator(FILTER_OPEN_SELECTOR).click()
-        except PlaywrightError:
-            pass
-        return False
+        await _close_filter_dialog(page)
+        return FILTER_FAILED
 
 
 async def _open_view_details(card: Locator, page: Page) -> bool:
@@ -323,7 +426,9 @@ async def read_status_for_assessment_year(
         logger.warning("No filed-return cards on the page")
         return _not_found(ay)
 
-    await _apply_ay_filter(page, ay)
+    if await _apply_ay_filter(page, ay) == FILTER_NOT_LISTED:
+        logger.info("A.Y. %s is not in the filter list", ay)
+        return _not_found(ay)
 
     cards = _cards_for_ay(page, ay)
     try:
