@@ -14,6 +14,7 @@ import boto3
 
 from app.core.config import settings
 from app.portal.foreign_assets import foreign_assets_pdf_key
+from app.portal.itr_json import itr_json_s3_key
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,14 @@ def evidence_s3_key(job_id: UUID | str) -> str:
 
 class PdfUploadError(Exception):
     """The foreign-assets PDF did not land in S3. The job must fail."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class JsonUploadError(Exception):
+    """The ITR JSON did not land in S3. The job must fail."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -121,4 +130,32 @@ async def upload_pdf(
             await asyncio.to_thread(_delete_object, bucket, old)
         except Exception:
             logger.warning("Could not delete replaced foreign-assets PDF %s", old)
+    return key
+
+
+async def upload_itr_json(
+    client_id: UUID | str,
+    assessment_year: str,
+    payload: bytes,
+) -> str:
+    """Store one ITR JSON. A later download for the same client and year overwrites it."""
+    bucket = (settings.S3_BUCKET_NAME or "").strip()
+    key = itr_json_s3_key(client_id, assessment_year)
+    if not bucket:
+        raise JsonUploadError("S3 bucket is not configured.")
+    try:
+        await asyncio.to_thread(
+            _put_object, bucket, key, payload, "application/json"
+        )
+    except Exception as exc:
+        code = ""
+        response = getattr(exc, "response", None)
+        if isinstance(response, dict):
+            code = (response.get("Error") or {}).get("Code") or ""
+        if code == "AccessDenied":
+            raise JsonUploadError("S3 denied PutObject for the ITR JSON.") from exc
+        raise JsonUploadError(
+            f"Could not store the A.Y. {assessment_year} ITR JSON."
+        ) from exc
+    logger.info("Uploaded ITR JSON s3://%s/%s", bucket, key)
     return key
