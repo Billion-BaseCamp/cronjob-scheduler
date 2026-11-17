@@ -269,3 +269,35 @@ def test_a_new_notice_is_emailed_even_after_a_recent_email(sent, recent_keys) ->
         )
     )
     assert len(sent) == 1
+
+
+_PENDING_DEMAND = [
+    {
+        "source": "outstanding_demand",
+        "is_extinguished": False,
+        "actions": {"submit_response": True},
+        "din": "D1",
+    }
+]
+
+
+def test_scheduled_outstanding_demand_waits_for_the_rm_report(sent) -> None:
+    job = _job("completed")
+    asyncio.run(
+        notice_snapshot.record_notice_outcome(
+            _Capture(), job, _CLIENT, "outstanding_demand", notices=_PENDING_DEMAND
+        )
+    )
+    assert sent == []
+    assert "alert_emailed_at" not in job.result
+
+
+def test_hand_run_outstanding_demand_is_still_emailed_per_client(sent) -> None:
+    job = _job("completed", "8f0c2f4e-advisor-sub")
+    asyncio.run(
+        notice_snapshot.record_notice_outcome(
+            _Capture(), job, _CLIENT, "outstanding_demand", notices=_PENDING_DEMAND
+        )
+    )
+    assert len(sent) == 1
+    assert sent[0].startswith("Action required: Rahul Sharma")
