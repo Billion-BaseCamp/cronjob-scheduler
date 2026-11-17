@@ -9,8 +9,7 @@ The finalizer runs every few minutes. When every job in a batch has settled it
 completes the batch; a monthly e-Proceedings batch with too few successful
 checks is marked failed instead. A batch past its deadline is failed and its
 queued jobs are cancelled. The finalizer never touches the weekly list: each
-job updates it as it finishes (see ``notice_watchlist``). A completed monthly
-outstanding-demand batch then emails each RM two reports.
+job updates it as it finishes (see ``notice_watchlist``). A completed outstanding-demand batch (1st or 16th) then emails each RM two reports.
 """
 
 from __future__ import annotations

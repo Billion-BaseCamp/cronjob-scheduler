@@ -3,7 +3,7 @@
 - e-Proceedings monthly: 28th at 23:00 IST, every client; the only run that
   takes clients off the weekly list.
 - e-Proceedings weekly: Mondays at 23:00 IST, clients on the weekly list only.
-- Outstanding demand monthly: 27th at 23:00 IST, every client.
+- Outstanding demand: 1st and 16th at 23:00 IST, every client.
 - Finalizer: every few minutes, completes or fails running batches.
 
 Start one run by hand (ignores the cron flags, still refuses to overlap):
@@ -26,7 +26,7 @@ from app.jobs.financial_year_job import scheduler
 from app.portal.notice_schedule import (
     CRON_HOUR,
     E_PROCEEDINGS_MONTHLY_DAY,
-    OUTSTANDING_DEMAND_MONTHLY_DAY,
+    OUTSTANDING_DEMAND_DAYS,
     RUN_E_PROCEEDINGS_MONTHLY,
     RUN_E_PROCEEDINGS_WEEKLY,
     RUN_OUTSTANDING_DEMAND_MONTHLY,
@@ -119,9 +119,9 @@ async def setup_notice_cron_jobs() -> None:
         _add_cron(
             RUN_OUTSTANDING_DEMAND_MONTHLY,
             CronTrigger(
-                day=OUTSTANDING_DEMAND_MONTHLY_DAY, hour=CRON_HOUR, minute=0, timezone=_TZ
+                day=OUTSTANDING_DEMAND_DAYS, hour=CRON_HOUR, minute=0, timezone=_TZ
             ),
-            f"Outstanding demand monthly ({OUTSTANDING_DEMAND_MONTHLY_DAY}th at {CRON_HOUR}:00 IST)",
+            f"Outstanding demand (1st and 16th at {CRON_HOUR}:00 IST)",
         )
     if settings.NOTICE_BATCH_FINALIZER_ENABLED:
         scheduler.add_job(

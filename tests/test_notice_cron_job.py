@@ -51,5 +51,5 @@ def test_schedules_match_the_agreed_days(monkeypatch) -> None:
     weekly = fields("notice_cron_e_proceedings_weekly")
     assert (weekly["day_of_week"], weekly["hour"]) == ("mon", "23")
     demand = fields("notice_cron_outstanding_demand_monthly")
-    assert (demand["day"], demand["hour"]) == ("27", "23")
+    assert (demand["day"], demand["hour"]) == ("1,16", "23")
     assert str(jobs["notice_cron_e_proceedings_monthly"].trigger.timezone) == "Asia/Kolkata"

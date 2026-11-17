@@ -1,9 +1,9 @@
 """Which harvested notices need an advisor, and the email copy for that.
 
 e-Proceedings, and an outstanding-demand check started by a person, send one
-mail per client when that check finds notices needing action. The monthly
-outstanding-demand run does not: it sends two reports per RM after the batch
-finishes (see ``outstanding_demand_report``). Not sent for ``cron-silent``
+mail per client when that check finds notices needing action. A scheduled outstanding-demand run does not: on the 1st and the 16th it
+sends two reports per RM after the batch finishes (see
+``outstanding_demand_report``). Not sent for ``cron-silent``
 runs, or when the same pending notices were already emailed for that client
 in the last ``ALERT_REPEAT_HOURS``. Login and technical failures are recorded
 on the job and are not emailed.
@@ -472,7 +472,7 @@ def render_outstanding_demand_report(
 
     text = (
         f"{greeting}\n\n"
-        f"The monthly Income Tax portal check found {found}.\n"
+        f"The Income Tax portal check found {found}.\n"
         f"{attachment}\n\n"
         + "\n\n".join(blocks)
         + f"\n\n{footer}\n"
@@ -480,7 +480,7 @@ def render_outstanding_demand_report(
     html = (
         f'<div style="{_BODY_STYLE}">'
         f'<p style="{_P_STYLE}">{escape(greeting)}</p>'
-        f'<p style="{_P_STYLE}">The monthly Income Tax portal check found {escape(found)}.</p>'
+        f'<p style="{_P_STYLE}">The Income Tax portal check found {escape(found)}.</p>'
         f'<p style="{_P_STYLE}">{escape(attachment)}</p>'
         f"{_html_table(_REPORT_HEADERS, rows)}"
         f'<p style="{_P_STYLE}">{escape(footer)}</p>'
