@@ -13,6 +13,7 @@ from uuid import UUID
 import boto3
 
 from app.core.config import settings
+from app.portal.ais_json import ais_json_s3_key
 from app.portal.foreign_assets import foreign_assets_pdf_key
 from app.portal.itr_json import itr_json_s3_key
 
@@ -35,6 +36,14 @@ class PdfUploadError(Exception):
 
 class JsonUploadError(Exception):
     """The ITR JSON did not land in S3. The job must fail."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class AisJsonUploadError(Exception):
+    """The AIS JSON did not land in S3. The job must fail."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -158,4 +167,35 @@ async def upload_itr_json(
             f"Could not store the A.Y. {assessment_year} ITR JSON."
         ) from exc
     logger.info("Uploaded ITR JSON s3://%s/%s", bucket, key)
+    return key
+
+
+async def upload_ais_json(
+    client_id: UUID | str,
+    pan: str,
+    financial_year: str,
+    payload: bytes,
+) -> str:
+    """Store one AIS JSON export. A later download for the same client and FY overwrites it."""
+    bucket = (settings.S3_BUCKET_NAME or "").strip()
+    key = ais_json_s3_key(client_id, pan, financial_year)
+    if not bucket:
+        raise AisJsonUploadError("S3 bucket is not configured.")
+    try:
+        await asyncio.to_thread(
+            _put_object, bucket, key, payload, "application/json"
+        )
+    except Exception as exc:
+        code = ""
+        response = getattr(exc, "response", None)
+        if isinstance(response, dict):
+            code = (response.get("Error") or {}).get("Code") or ""
+        if code == "AccessDenied":
+            raise AisJsonUploadError(
+                "S3 denied PutObject for the AIS JSON."
+            ) from exc
+        raise AisJsonUploadError(
+            f"Could not store the F.Y. {financial_year} AIS JSON."
+        ) from exc
+    logger.info("Uploaded AIS JSON s3://%s/%s", bucket, key)
     return key

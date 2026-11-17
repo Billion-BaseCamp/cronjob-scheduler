@@ -138,6 +138,18 @@ class Settings:
     S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")
     S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "ap-south-1"))
 
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
+    GEMINI_CAPTCHA_MODEL: str = (
+        os.getenv("GEMINI_CAPTCHA_MODEL", "gemini-2.5-flash").strip()
+        or "gemini-2.5-flash"
+    )
+    GEMINI_CAPTCHA_TIMEOUT_SECONDS: float = _env_float(
+        "GEMINI_CAPTCHA_TIMEOUT_SECONDS", "20"
+    )
+    AIS_CAPTCHA_MAX_ATTEMPTS: int = max(
+        1, _env_int("AIS_CAPTCHA_MAX_ATTEMPTS", 4)
+    )
+
     class Config:
         env_file = ".env"
         case_sensitive = True

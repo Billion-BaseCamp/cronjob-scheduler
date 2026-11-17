@@ -190,8 +190,8 @@ async def run_ais_logout(page: Page | None) -> bool:
         return False
 
 
-async def open_foreign_assets(page: Page, pan: str) -> AisPages:
-    """Return the compliance-portal page sitting on Foreign Assets Information."""
+async def open_ais_instructions(page: Page, pan: str) -> AisPages:
+    """Open AIS from e-filing and stop on the AIS Instructions/home page."""
     try:
         ais = await _open_ais_tab(page)
     except PlaywrightTimeout:
@@ -228,6 +228,15 @@ async def open_foreign_assets(page: Page, pan: str) -> AisPages:
             error_code="UI_DRIFT",
             message="AIS did not show the instructions page.",
         )
+    return AisPages(page=ais)
+
+
+async def open_foreign_assets(page: Page, pan: str) -> AisPages:
+    """Return the compliance-portal page sitting on Foreign Assets Information."""
+    opened = await open_ais_instructions(page, pan)
+    if opened.error_code or opened.page is None:
+        return opened
+    ais = opened.page
 
     try:
         logger.info("Opening Reports")
