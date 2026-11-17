@@ -71,9 +71,39 @@ def _fy_regex(financial_year: str) -> re.Pattern[str]:
 
 async def _visible(locator: Locator, timeout: int = 1_500) -> bool:
     try:
-        return await locator.first.is_visible(timeout=timeout)
+        await locator.first.wait_for(state="visible", timeout=timeout)
+        return True
     except PlaywrightTimeout:
         return False
+
+
+async def _find_ais_subtab(page: Page) -> Locator | None:
+    """Find the ``AIS`` sub-tab next to ``Instructions`` (never the top navbar/breadcrumb)."""
+    inst = page.locator("a, button, [role='tab'], li, span").filter(
+        has_text=re.compile(r"^\s*Instructions\s*$")
+    )
+    if await inst.count() > 0:
+        for xpath in ("xpath=../..", "xpath=..", "xpath=../../.."):
+            container = inst.first.locator(xpath)
+            if await container.count() == 0:
+                continue
+            candidate = container.locator(
+                "a, button, [role='tab'], li"
+            ).filter(has_text=_AIS_SUBTAB_RE)
+            if await candidate.count() == 1 and await candidate.first.is_visible():
+                return candidate.first
+
+    non_nav = page.locator(
+        "a:not(nav.ctm-navbar a):not(.breadcrumb a), "
+        "button:not(nav.ctm-navbar button), "
+        "[role='tab']"
+    ).filter(has_text=_AIS_SUBTAB_RE)
+    count = await non_nav.count()
+    for idx in range(count - 1, -1, -1):
+        cand = non_nav.nth(idx)
+        if await cand.is_visible():
+            return cand
+    return None
 
 
 async def _select_fy_on_ais_tab(page: Page, financial_year: str) -> str:
@@ -81,17 +111,26 @@ async def _select_fy_on_ais_tab(page: Page, financial_year: str) -> str:
 
     Returns ``selected``, ``missing``, or ``drift``.
     """
-    ais_tab = page.locator("a, button, [role='tab'], li").filter(
-        has_text=_AIS_SUBTAB_RE
-    )
-    if await ais_tab.count() == 0:
+    ais_tab = await _find_ais_subtab(page)
+    if ais_tab is None:
+        logger.warning("AIS sub-tab was not found url=%s", page.url)
         return "drift"
     try:
-        await ais_tab.first.click(timeout=_PAGE_TIMEOUT_MS)
+        logger.info("Clicking AIS sub-tab url=%s", page.url)
+        await ais_tab.click(timeout=_PAGE_TIMEOUT_MS)
     except PlaywrightTimeout:
+        logger.warning("Timed out clicking AIS sub-tab url=%s", page.url)
         return "drift"
 
-    dropdown = page.locator("app-dropdown-btn.fy-dropdown")
+    try:
+        await page.locator("app-ais-instructions").first.wait_for(
+            state="hidden", timeout=10_000
+        )
+    except PlaywrightTimeout:
+        pass
+    logger.info("On AIS sub-tab url=%s", page.url)
+
+    dropdown = page.locator("app-dropdown-btn.fy-dropdown, app-dropdown-btn")
     toggle = dropdown.locator("button.dropdown-toggle")
     try:
         await toggle.first.wait_for(state="visible", timeout=_PAGE_TIMEOUT_MS)
@@ -112,7 +151,20 @@ async def _select_fy_on_ais_tab(page: Page, financial_year: str) -> str:
                 has_text=_fy_regex(financial_year)
             ).first.wait_for(state="visible", timeout=_PAGE_TIMEOUT_MS)
     except PlaywrightTimeout:
-        logger.warning("Could not select F.Y. %s on AIS tab", financial_year)
+        # Fallback: native <select> or Angular Material <mat-select> if present
+        native_select = page.locator("select").filter(has_text=_fy_regex(financial_year))
+        if await native_select.count() > 0 and await native_select.first.is_visible():
+            options = await native_select.first.locator("option").all_inner_texts()
+            matched = next(
+                (opt for opt in options if _fy_regex(financial_year).search(opt)),
+                None,
+            )
+            if matched:
+                await native_select.first.select_option(label=matched)
+                return "selected"
+        logger.warning(
+            "Could not select F.Y. %s on AIS tab url=%s", financial_year, page.url
+        )
         return "drift"
     return "selected"
 
@@ -122,7 +174,7 @@ async def _open_download_modal(page: Page, financial_year: str) -> str:
 
     Returns ``opened``, ``missing``, or ``drift``.
     """
-    instructions_btn = page.locator("button, a").filter(
+    instructions_btn = page.locator("button:visible, a:visible").filter(
         has_text=_INSTRUCTIONS_DOWNLOAD_BTN_RE
     )
     if await _visible(instructions_btn, timeout=3_000):
@@ -136,12 +188,27 @@ async def _open_download_modal(page: Page, financial_year: str) -> str:
     if selected != "selected":
         return selected
 
-    ais_download_btn = page.locator("button, a").filter(
-        has_text=re.compile(r"Download", re.I)
+    ais_download_btn = page.locator(
+        "button.download-btn:visible, button:visible"
+    ).filter(
+        has_text=re.compile(
+            r"^\s*Download(?:\s+AIS(?:\s*/\s*TIS)?)?(?:\s*\(.*\))?\s*$", re.I
+        )
     )
     if await _visible(ais_download_btn, timeout=10_000):
+        logger.info("Clicking Download button on AIS tab url=%s", page.url)
         await ais_download_btn.first.click()
         return "opened"
+
+    broad_btn = page.locator("button:visible").filter(
+        has_text=re.compile(r"\bDownload\b", re.I)
+    )
+    if await _visible(broad_btn, timeout=3_000):
+        logger.info("Clicking fallback Download button on AIS tab url=%s", page.url)
+        await broad_btn.first.click()
+        return "opened"
+
+    logger.warning("Download button not found on AIS tab url=%s", page.url)
     return "drift"
 
 
