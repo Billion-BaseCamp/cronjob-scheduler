@@ -2,7 +2,7 @@
 
 - Monthly e-Proceedings (28th): check every client.
 - Weekly e-Proceedings (Mondays): check only the clients on the weekly list.
-- Monthly outstanding demand (27th): check every client.
+- Outstanding demand (1st and 16th): check every client.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ RUN_WORKFLOW = {
 }
 
 E_PROCEEDINGS_MONTHLY_DAY = 28
-OUTSTANDING_DEMAND_MONTHLY_DAY = 27
+OUTSTANDING_DEMAND_DAYS = "1,16"
 CRON_HOUR = 23
 
 REASON_ACTION_REQUIRED = "action_required"

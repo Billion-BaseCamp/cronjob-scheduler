@@ -9,7 +9,7 @@ The finalizer runs every few minutes. When every job in a batch has settled it
 completes the batch; a monthly e-Proceedings batch with too few successful
 checks is marked failed instead. A batch past its deadline is failed and its
 queued jobs are cancelled. The finalizer never touches the weekly list: each
-job updates it as it finishes (see ``notice_watchlist``).
+job updates it as it finishes (see ``notice_watchlist``). A completed outstanding-demand batch (1st or 16th) then emails each RM two reports.
 """
 
 from __future__ import annotations
@@ -437,11 +437,31 @@ async def _finalize_one(batch_id: UUID, now: datetime) -> Optional[str]:
                 await db.commit()
                 return f"{batch.run_type} {batch_id}: failed ({reason})"
 
+        from app.portal.outstanding_demand_report import should_send_demand_reports
+
+        report_batch_id = (
+            batch.id
+            if should_send_demand_reports(
+                batch.run_type, getattr(batch, "requested_by_sub", None)
+            )
+            else None
+        )
         batch.status = "completed"
         batch.completed_at = now
         batch.error_message = None
         batch.summary = summary
         await db.commit()
+        if report_batch_id is not None:
+            try:
+                from app.portal.outstanding_demand_report import (
+                    send_outstanding_demand_reports,
+                )
+
+                await send_outstanding_demand_reports(report_batch_id, checked_at=now)
+            except Exception:
+                logger.exception(
+                    "Outstanding demand reports failed for batch %s", report_batch_id
+                )
         return f"{batch.run_type} {batch_id}: completed"
 
 
