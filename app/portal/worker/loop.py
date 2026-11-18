@@ -105,7 +105,15 @@ async def _slot(slot: int) -> None:
             logger.exception("Worker slot %s iteration failed", slot)
         if _stop.is_set():
             return
-        if not claimed:
+        if claimed:
+            cooldown = max(0.0, settings.WORKER_JOB_COOLDOWN_SECONDS)
+            if cooldown > 0.0:
+                try:
+                    await asyncio.wait_for(_stop.wait(), timeout=cooldown)
+                    return
+                except asyncio.TimeoutError:
+                    pass
+        else:
             try:
                 await asyncio.wait_for(
                     _stop.wait(), timeout=settings.WORKER_POLL_SECONDS

@@ -257,6 +257,7 @@ def test_download_ais_json_job_uploads_s3_and_records_archive(monkeypatch) -> No
     assert job.result["pan"] == "AXKPS8309K"
     assert job.result["captcha_attempts"] == 2
     assert job.result["portal_date_of_birth"] == "1991-01-21"
+    assert isinstance(job.result.get("fetched_at"), str)
     assert job.result["ais_logged_out"] is True
     assert job.result["logged_out"] is True
     upload_mock.assert_awaited_once_with(

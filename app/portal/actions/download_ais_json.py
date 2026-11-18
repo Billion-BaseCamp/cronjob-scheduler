@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import re
 import tempfile
 from dataclasses import dataclass
@@ -84,6 +85,17 @@ async def _visible(locator: Locator, timeout: int = 1_500) -> bool:
         return True
     except PlaywrightTimeout:
         return False
+
+
+async def _human_pause(page: Page) -> None:
+    """Brief randomized pause between portal UI steps to avoid bot-speed bursts."""
+    lo = max(0.0, settings.PORTAL_ACTION_MIN_DELAY_SECONDS)
+    hi = max(lo, settings.PORTAL_ACTION_MAX_DELAY_SECONDS)
+    if hi <= 0.0:
+        return
+    ms = int(random.uniform(lo, hi) * 1000)
+    if ms > 0:
+        await page.wait_for_timeout(ms)
 
 
 async def _find_ais_subtab(page: Page) -> Locator | None:
@@ -172,6 +184,7 @@ async def _select_fy_on_ais_tab(page: Page, financial_year: str) -> str:
             await dropdown.locator("span.value-text").filter(
                 has_text=_fy_regex(financial_year)
             ).first.wait_for(state="visible", timeout=_PAGE_TIMEOUT_MS)
+            await _human_pause(page)
     except PlaywrightTimeout:
         # Fallback: native <select> or Angular Material <mat-select> if present
         native_select = page.locator("select").filter(has_text=_fy_regex(financial_year))
@@ -221,6 +234,7 @@ async def _open_download_modal(page: Page, financial_year: str) -> str:
         "img[title*='Download AIS' i], img[src*='download.svg']"
     )
     if await _visible(ais_card_icon, timeout=10_000):
+        await _human_pause(page)
         logger.info("Clicking AIS card download icon url=%s", page.url)
         await ais_card_icon.first.click()
         return "opened"
@@ -269,6 +283,7 @@ async def _click_json_download_row(page: Page) -> bool:
     if await row.count() > 0:
         btn = row.last.locator("button").filter(has_text=_DOWNLOAD_BTN_RE)
         if await btn.count() > 0:
+            await _human_pause(page)
             logger.info("Clicking Download on AIS JSON (for AIS Utility) row")
             await btn.first.click()
             return True
@@ -539,6 +554,7 @@ async def _download_from_activity_history(
 
     page.on("download", _on_download)
     try:
+        await _human_pause(page)
         logger.info("Clicking Activity History download icon (ref=%s)", reference_id or "-")
         await icon.click()
         dl_deadline = loop.time() + _DOWNLOAD_TIMEOUT_S
@@ -690,6 +706,7 @@ async def download_ais_json(
 
         await text_input.first.fill("")
         await text_input.first.fill(solution)
+        await _human_pause(page)
 
         proceed_btn = captcha_dialog.locator("button").filter(has_text=_PROCEED_BTN_RE)
         if await proceed_btn.count() == 0:

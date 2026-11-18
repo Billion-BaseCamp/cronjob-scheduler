@@ -106,6 +106,7 @@ def _result(
     s3_key: str | None = None,
     file_size_bytes: int | None = None,
     captcha_attempts: int = 0,
+    fetched_at: datetime | None = None,
     born_on: Any = None,
     dry_run: bool = False,
     ais_logged_out: bool | None = None,
@@ -120,6 +121,8 @@ def _result(
         "captcha_attempts": captcha_attempts,
         "logged_out": logged_out,
     }
+    if fetched_at is not None:
+        payload["fetched_at"] = fetched_at.isoformat()
     if ais_logged_out is not None:
         payload["ais_logged_out"] = ais_logged_out
     if born_on is not None:
@@ -262,12 +265,14 @@ async def run_download_ais_json_job(db, job, *, workflow: str) -> None:
 
             s3_key: str | None = None
             file_size: int | None = None
+            fetched_at: datetime | None = None
             if scrape.status == "downloaded" and scrape.payload is not None:
                 try:
                     s3_key = await upload_ais_json(
                         job.client_id, pan, fy, scrape.payload
                     )
                     file_size = len(scrape.payload)
+                    fetched_at = _now()
                     await remember_ais_json_archive(
                         db,
                         client_id=job.client_id,
@@ -299,6 +304,7 @@ async def run_download_ais_json_job(db, job, *, workflow: str) -> None:
                 s3_key=s3_key,
                 file_size_bytes=file_size,
                 captcha_attempts=scrape.captcha_attempts,
+                fetched_at=fetched_at,
                 born_on=born_on,
             )
 

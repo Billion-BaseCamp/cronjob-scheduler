@@ -98,6 +98,15 @@ class Settings:
     WORKER_POLL_SECONDS: float = _env_float("WORKER_POLL_SECONDS", "2")
     WORKER_CONCURRENCY: int = min(8, max(1, _env_int("WORKER_CONCURRENCY", 2)))
     WORKER_HEARTBEAT_SECONDS: float = _env_float("WORKER_HEARTBEAT_SECONDS", "30")
+    WORKER_JOB_COOLDOWN_SECONDS: float = max(
+        0.0, _env_float("WORKER_JOB_COOLDOWN_SECONDS", "3.0")
+    )
+    PORTAL_ACTION_MIN_DELAY_SECONDS: float = max(
+        0.0, _env_float("PORTAL_ACTION_MIN_DELAY_SECONDS", "0.6")
+    )
+    PORTAL_ACTION_MAX_DELAY_SECONDS: float = max(
+        0.0, _env_float("PORTAL_ACTION_MAX_DELAY_SECONDS", "1.4")
+    )
     MAX_ATTEMPTS: int = _env_int("MAX_ATTEMPTS", 3)
     PORTAL_AUTOMATION_TIMEOUT_MINUTES: int = _env_int(
         "PORTAL_AUTOMATION_TIMEOUT_MINUTES", 15
