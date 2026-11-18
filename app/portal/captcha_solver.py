@@ -69,7 +69,7 @@ def _post_gemini(
         ],
         "generationConfig": {
             "temperature": 0.0,
-            "maxOutputTokens": 32,
+            "maxOutputTokens": 256,
         },
     }
     response = requests.post(
@@ -82,8 +82,16 @@ def _post_gemini(
         timeout=timeout_seconds,
     )
     if response.status_code >= 400:
+        detail = ""
+        try:
+            err_body = response.json()
+            msg = ((err_body or {}).get("error") or {}).get("message")
+            if isinstance(msg, str) and msg.strip():
+                detail = f": {msg.strip()[:200]}"
+        except ValueError:
+            pass
         raise CaptchaSolveError(
-            f"Gemini API returned HTTP {response.status_code}"
+            f"Gemini API returned HTTP {response.status_code}{detail}"
         )
     try:
         return response.json()
@@ -106,7 +114,7 @@ async def solve_captcha_with_gemini(
         raise CaptchaSolveError("GEMINI_API_KEY is not configured.")
     resolved_model = (
         model if model is not None else settings.GEMINI_CAPTCHA_MODEL
-    ).strip() or "gemini-2.5-flash"
+    ).strip() or "gemini-3.1-flash-lite"
     resolved_timeout = (
         timeout_seconds
         if timeout_seconds is not None

@@ -140,8 +140,8 @@ class Settings:
 
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
     GEMINI_CAPTCHA_MODEL: str = (
-        os.getenv("GEMINI_CAPTCHA_MODEL", "gemini-2.5-flash").strip()
-        or "gemini-2.5-flash"
+        os.getenv("GEMINI_CAPTCHA_MODEL", "gemini-3.1-flash-lite").strip()
+        or "gemini-3.1-flash-lite"
     )
     GEMINI_CAPTCHA_TIMEOUT_SECONDS: float = _env_float(
         "GEMINI_CAPTCHA_TIMEOUT_SECONDS", "20"

@@ -82,12 +82,12 @@ def test_solve_captcha_with_gemini_parses_candidate(monkeypatch) -> None:
         solve_captcha_with_gemini(
             b"\x89PNG\r\n\x1a\nfake",
             api_key="test-key",
-            model="gemini-2.5-flash",
+            model="gemini-3.1-flash-lite",
             timeout_seconds=12.0,
         )
     )
     assert answer == "KCIM7"
-    assert "gemini-2.5-flash:generateContent" in captured["url"]
+    assert "gemini-3.1-flash-lite:generateContent" in captured["url"]
     assert captured["headers"]["x-goog-api-key"] == "test-key"
     assert captured["timeout"] == 12.0
 
@@ -102,6 +102,19 @@ def test_solve_captcha_with_gemini_rejects_missing_key_or_http_error(monkeypatch
     )
     with pytest.raises(CaptchaSolveError):
         asyncio.run(solve_captcha_with_gemini(b"png", api_key="test-key"))
+
+
+def test_extract_reference_id() -> None:
+    pytest.importorskip("playwright")
+    from app.portal.actions.download_ais_json import extract_reference_id
+
+    msg = (
+        "Since the file is large, your download request has been submitted "
+        "successfully (Reference ID: 1811202611132843) . The requested file "
+        "will be available shortly under Activity History."
+    )
+    assert extract_reference_id(msg) == "1811202611132843"
+    assert extract_reference_id("No reference here") is None
 
 
 def test_download_ais_json_job_requires_valid_fy() -> None:
