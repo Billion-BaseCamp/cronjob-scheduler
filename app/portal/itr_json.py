@@ -1,8 +1,9 @@
-"""Which filed-return card supplies the ITR JSON, and where that file is stored.
+"""Which filed-return card supplies the ITR file, and where that file is stored.
 
-Cards are ordered by Filing Date, newest first. Rectification and Revised
-keep walking when Download JSON is missing. Any other filing type stops the
-walk: download it when the button is there, otherwise there is no file.
+AY 2021-22 onward is JSON. AY 2020-21 and earlier is XML. Cards are ordered by
+Filing Date, newest first. Rectification and Revised keep walking when the
+download button is missing. Any other filing type stops the walk: download it
+when the button is there, otherwise there is no file.
 ``latest_filing_type`` and ``latest_filing_date`` come from that newest card.
 """
 
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Sequence
@@ -47,13 +49,15 @@ _DATE_RE = re.compile(
 _WALK_TYPES = frozenset({"rectification", "revised"})
 
 JSON_NOT_AVAILABLE = "JSON_NOT_AVAILABLE"
+XML_NOT_AVAILABLE = "XML_NOT_AVAILABLE"
+JSON_FROM_START_YEAR = 2021
 
 
 @dataclass(frozen=True)
 class FiledReturnCard:
     filing_type: str
     filing_date: datetime | None
-    has_download_json: bool
+    has_download_json: bool  # this year's Download JSON or Download XML button
     page_index: int = 0
     card_index: int = 0
     itr_form: str = ""
@@ -112,12 +116,52 @@ def parse_e_verified_on(text: str) -> str:
     return _iso_date(match.group(1))
 
 
-def itr_json_s3_key(client_id: UUID | str, assessment_year: str) -> str:
-    """One object per client and assessment year. The next download overwrites it."""
+def itr_file_format(assessment_year: str) -> str:
+    """``json`` from AY 2021-22. ``xml`` through AY 2020-21."""
+    start = (assessment_year or "").strip().split("-", 1)[0]
+    try:
+        start_year = int(start)
+    except ValueError:
+        return "json"
+    return "json" if start_year >= JSON_FROM_START_YEAR else "xml"
+
+
+def download_button_label(file_format: str) -> str:
+    return "Download XML" if file_format == "xml" else "Download JSON"
+
+
+def missing_file_code(file_format: str) -> str:
+    return XML_NOT_AVAILABLE if file_format == "xml" else JSON_NOT_AVAILABLE
+
+
+def _safe_assessment_year(assessment_year: str) -> str:
     ay = (assessment_year or "").strip()
     if not ay or "/" in ay or "\\" in ay or ".." in ay:
         raise ValueError("assessment year cannot be used in an S3 key")
+    return ay
+
+
+def itr_json_s3_key(client_id: UUID | str, assessment_year: str) -> str:
+    """One JSON object per client and assessment year. The next download overwrites it."""
+    ay = _safe_assessment_year(assessment_year)
     return f"portal-automation/json/{client_id}/{ay}/itr.json"
+
+
+def itr_xml_s3_key(client_id: UUID | str, assessment_year: str) -> str:
+    """One XML object per client and assessment year. The next download overwrites it."""
+    ay = _safe_assessment_year(assessment_year)
+    return f"portal-automation/xml/{client_id}/{ay}/itr.xml"
+
+
+def itr_file_s3_key(
+    client_id: UUID | str,
+    assessment_year: str,
+    file_format: str | None = None,
+) -> str:
+    fmt = file_format or itr_file_format(assessment_year)
+    if fmt == "xml":
+        return itr_xml_s3_key(client_id, assessment_year)
+    return itr_json_s3_key(client_id, assessment_year)
 
 
 def is_itr_json(raw: bytes) -> bool:
@@ -126,6 +170,18 @@ def is_itr_json(raw: bytes) -> bool:
     except (UnicodeDecodeError, json.JSONDecodeError):
         return False
     return isinstance(document, dict)
+
+
+def is_itr_xml(raw: bytes) -> bool:
+    """A parsed XML document that is not a JSON object and not an HTML page."""
+    if is_itr_json(raw):
+        return False
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return False
+    tag = root.tag.rsplit("}", 1)[-1].lower()
+    return tag not in {"html", "head", "body"}
 
 
 def cards_newest_first(cards: Sequence[FiledReturnCard]) -> list[FiledReturnCard]:
