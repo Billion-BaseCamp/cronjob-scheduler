@@ -1,7 +1,8 @@
-"""Download one ITR JSON from View Filed Returns.
+"""Download one ITR file from View Filed Returns.
 
+AY 2021-22 onward uses Download JSON. AY 2020-21 and earlier uses Download XML.
 The list opens on one page. View More is clicked before each year filter so
-every assessment year is available. Download JSON is clicked on the filtered
+every assessment year is available. The download is clicked on the filtered
 list, before View Details. Rectification and Revised cards that lack the
 button fall through to the next older card. View Details is only for the
 e-verified date. Back returns to the one-page list, so View More and the year
@@ -40,10 +41,13 @@ from app.portal.actions.read_filed_return_status import (
     portal_assessment_year,
 )
 from app.portal.itr_json import (
-    JSON_NOT_AVAILABLE,
     FiledReturnCard,
     choose_itr_json_card,
+    download_button_label,
     is_itr_json,
+    is_itr_xml,
+    itr_file_format,
+    missing_file_code,
     parse_acknowledgement_no,
     parse_e_verified_on,
     parse_filing_section,
@@ -53,7 +57,8 @@ from app.portal.itr_json import (
 
 logger = logging.getLogger(__name__)
 
-_DOWNLOAD_JSON_RE = re.compile(r"Download JSON")
+_DOWNLOAD_JSON_RE = re.compile(r"Download\s+JSON", re.I)
+_DOWNLOAD_XML_RE = re.compile(r"Download\s+XML", re.I)
 _DOWNLOAD_CONTROL = "button, a, span.hyperLink"
 _PAGINATOR = "app-itr-status mat-paginator"
 _NEXT = "button.mat-mdc-paginator-navigation-next"
@@ -71,6 +76,7 @@ class ItrJsonScrape:
     cards: tuple[FiledReturnCard, ...]
     chosen: Optional[FiledReturnCard]
     payload: Optional[bytes]
+    file_format: str = "json"
     error_code: Optional[str] = None
     error_message: Optional[str] = None
 
@@ -87,6 +93,7 @@ def _empty(
         cards=cards,
         chosen=None,
         payload=None,
+        file_format=itr_file_format(ay),
         error_code=error_code,
         error_message=error_message,
     )
@@ -124,8 +131,16 @@ async def _wait_range_change(page: Page, before: str) -> bool:
     return False
 
 
-async def _download_button(card: Locator) -> Optional[Locator]:
-    buttons = card.locator(_DOWNLOAD_CONTROL).filter(has_text=_DOWNLOAD_JSON_RE)
+def _download_pattern(file_format: str) -> re.Pattern[str]:
+    if file_format == "xml":
+        return _DOWNLOAD_XML_RE
+    return _DOWNLOAD_JSON_RE
+
+
+async def _download_button(card: Locator, file_format: str) -> Optional[Locator]:
+    buttons = card.locator(_DOWNLOAD_CONTROL).filter(
+        has_text=_download_pattern(file_format)
+    )
     count = await buttons.count()
     for index in range(count):
         button = buttons.nth(index)
@@ -135,7 +150,7 @@ async def _download_button(card: Locator) -> Optional[Locator]:
 
 
 async def _snapshot_page(
-    page: Page, assessment_year: str, page_index: int
+    page: Page, assessment_year: str, page_index: int, file_format: str
 ) -> list[FiledReturnCard]:
     cards = _cards_for_ay(page, assessment_year)
     count = await cards.count()
@@ -143,7 +158,7 @@ async def _snapshot_page(
     for index in range(count):
         card = cards.nth(index)
         text = await card.inner_text()
-        button = await _download_button(card)
+        button = await _download_button(card, file_format)
         snapshots.append(
             FiledReturnCard(
                 filing_type=parse_filing_type(text),
@@ -161,13 +176,15 @@ async def _snapshot_page(
 
 
 async def _collect_cards(
-    page: Page, assessment_year: str
+    page: Page, assessment_year: str, file_format: str
 ) -> tuple[list[FiledReturnCard], int]:
     collected: list[FiledReturnCard] = []
     page_index = 0
     seen_ranges: set[str] = set()
     while page_index < _MAX_PAGES:
-        collected.extend(await _snapshot_page(page, assessment_year, page_index))
+        collected.extend(
+            await _snapshot_page(page, assessment_year, page_index, file_format)
+        )
         nxt = _paginator(page).locator(_NEXT)
         if await _is_disabled(nxt):
             return collected, page_index
@@ -265,15 +282,19 @@ async def _e_verified_from_details(
     return found
 
 
-async def _click_download(page: Page, card: FiledReturnCard, ay: str) -> Optional[bytes]:
+async def _click_download(
+    page: Page, card: FiledReturnCard, ay: str, file_format: str
+) -> Optional[bytes]:
+    label = download_button_label(file_format)
     cards = _cards_for_ay(page, ay)
     if card.card_index >= await cards.count():
         logger.warning("Card %s is gone on page %s", card.card_index, card.page_index)
         return None
-    button = await _download_button(cards.nth(card.card_index))
+    button = await _download_button(cards.nth(card.card_index), file_format)
     if button is None:
         logger.warning(
-            "Download JSON disappeared on %s card %s",
+            "%s disappeared on %s card %s",
+            label,
             card.filing_type,
             card.card_index,
         )
@@ -290,7 +311,8 @@ async def _click_download(page: Page, card: FiledReturnCard, ay: str) -> Optiona
     page.on("download", _on_download)
     try:
         logger.info(
-            "Download JSON filing_type=%s date=%s page=%s card=%s",
+            "%s filing_type=%s date=%s page=%s card=%s",
+            label,
             card.filing_type,
             card.filing_date,
             card.page_index,
@@ -306,8 +328,16 @@ async def _click_download(page: Page, card: FiledReturnCard, ay: str) -> Optiona
         page.remove_listener("download", _on_download)
 
 
+def _accepts_file(payload: bytes, file_format: str) -> bool:
+    if file_format == "xml":
+        return is_itr_xml(payload)
+    return is_itr_json(payload)
+
+
 async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
     ay = portal_assessment_year(assessment_year)
+    file_format = itr_file_format(ay)
+    label = download_button_label(file_format)
     try:
         await page.locator(CARD_SELECTOR).first.wait_for(
             state="visible",
@@ -349,7 +379,7 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
         )
 
     try:
-        cards, current_page = await _collect_cards(page, ay)
+        cards, current_page = await _collect_cards(page, ay, file_format)
     except (PlaywrightTimeoutError, PlaywrightError):
         logger.warning("Could not read filed-return cards", exc_info=True)
         return _empty(
@@ -363,8 +393,8 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
     if chosen is None:
         return _empty(
             ay,
-            error_code=JSON_NOT_AVAILABLE,
-            error_message=f"No Download JSON could be saved for AY {ay}.",
+            error_code=missing_file_code(file_format),
+            error_message=f"No {label} could be saved for AY {ay}.",
             cards=found,
         )
 
@@ -379,14 +409,15 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
             cards=found,
             chosen=chosen,
             payload=None,
+            file_format=file_format,
             error_code="UI_DRIFT",
-            error_message="Could not return to the filing that has Download JSON.",
+            error_message=f"Could not return to the filing that has {label}.",
         )
 
     try:
-        payload = await _click_download(page, chosen, ay)
+        payload = await _click_download(page, chosen, ay, file_format)
     except (PlaywrightTimeoutError, PlaywrightError):
-        logger.warning("Download JSON click failed", exc_info=True)
+        logger.warning("%s click failed", label, exc_info=True)
         payload = None
     if not payload:
         return ItrJsonScrape(
@@ -394,17 +425,20 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
             cards=found,
             chosen=chosen,
             payload=None,
+            file_format=file_format,
             error_code="DOWNLOAD_FAILED",
-            error_message=f"Download JSON did not arrive for AY {ay}.",
+            error_message=f"{label} did not arrive for AY {ay}.",
         )
-    if not is_itr_json(payload):
+    kind = "XML" if file_format == "xml" else "JSON"
+    if not _accepts_file(payload, file_format):
         return ItrJsonScrape(
             assessment_year=ay,
             cards=found,
             chosen=chosen,
             payload=None,
+            file_format=file_format,
             error_code="DOWNLOAD_FAILED",
-            error_message=f"Download JSON for AY {ay} was not a JSON file.",
+            error_message=f"{label} for AY {ay} was not a {kind} file.",
         )
 
     if not chosen.e_verified_on:
@@ -423,4 +457,5 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
         cards=found,
         chosen=chosen,
         payload=payload,
+        file_format=file_format,
     )

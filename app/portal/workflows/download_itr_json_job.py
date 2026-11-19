@@ -1,7 +1,8 @@
-"""DOWNLOAD_ITR_JSON: login, download one ITR JSON, store it in S3, log out.
+"""DOWNLOAD_ITR_JSON: login, download one ITR file, store it in S3, log out.
 
-The object key is ``portal-automation/json/{client_id}/{assessment_year}/itr.json``.
-A later run for the same client and year overwrites it. Filing status is not changed.
+AY 2021-22 onward is ``portal-automation/json/{client_id}/{assessment_year}/itr.json``.
+AY 2020-21 and earlier is ``portal-automation/xml/{client_id}/{assessment_year}/itr.xml``.
+A later run for the same client and year overwrites that object. Filing status is not changed.
 """
 
 from __future__ import annotations
@@ -17,12 +18,13 @@ from app.portal.actions.login_outcomes import LoginOutcome
 from app.portal.actions.logout import run_logout
 from app.portal.actions.read_filed_return_status import ITR_NOT_FILED
 from app.portal.actions.view_filed_returns import run_open_filed_returns
-from app.portal.evidence import JsonUploadError, upload_itr_json, upload_screenshot
+from app.portal.evidence import JsonUploadError, upload_itr_file, upload_screenshot
 from app.portal.evidence_step import EVIDENCE_FILED_RETURNS, EVIDENCE_LOGIN
 from app.portal.itr_json import (
     FiledReturnCard,
     counts_by_filing_type,
     downloaded_filing_date,
+    itr_file_format,
     latest_filing,
 )
 from app.portal.itr_json_status import remember_itr_json_year
@@ -31,7 +33,7 @@ from app.portal.workflows.filed_return_status_job import _apply_login_outcome
 
 logger = logging.getLogger(__name__)
 
-STEPS = ("LOGIN", "VIEW_FILED_RETURNS", "DOWNLOAD_JSON", "LOGOUT")
+STEPS = ("LOGIN", "VIEW_FILED_RETURNS", "DOWNLOAD_FILE", "LOGOUT")
 _EVIDENCE_RESULT_KEYS = ("evidence_s3_key", "evidence_step", "login_evidence_s3_key")
 
 
@@ -107,14 +109,16 @@ def _result(
     *,
     assessment_year: str,
     logged_out: bool,
-    cards: tuple[FiledReturnCard, ...] = (),
+    cards: tuple[FiledReturnCard, ...] | list[FiledReturnCard] = (),
     chosen: FiledReturnCard | None = None,
     s3_key: str | None = None,
+    file_format: str = "json",
     dry_run: bool = False,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "workflow": workflow,
         "assessment_year": assessment_year,
+        "file_format": file_format,
         "login_ok": True,
         "opened_filed_returns": True,
         "logged_out": logged_out,
@@ -126,7 +130,8 @@ def _result(
         "acknowledgement_no": _blank(chosen.acknowledgement_no) if chosen is not None else None,
         "filing_section": _blank(chosen.filing_section) if chosen is not None else None,
         "e_verified_on": _blank(chosen.e_verified_on) if chosen is not None else None,
-        "itr_json_s3_key": s3_key,
+        "itr_json_s3_key": s3_key if file_format != "xml" else None,
+        "itr_xml_s3_key": s3_key if file_format == "xml" else None,
         **_summary(cards),
     }
     if dry_run:
@@ -141,7 +146,7 @@ async def _remember(db, job, payload: dict[str, Any], *, status: str) -> None:
         assessment_year=str(payload.get("assessment_year") or ""),
         status=status,
         job_id=job.id,
-        s3_key=payload.get("itr_json_s3_key"),
+        s3_key=payload.get("itr_xml_s3_key") or payload.get("itr_json_s3_key"),
         itr_form=payload.get("itr_form"),
         acknowledgement_no=payload.get("acknowledgement_no"),
         filing_section=payload.get("filing_section"),
@@ -193,6 +198,7 @@ async def run_download_itr_json_job(db, job, *, workflow: str) -> None:
                         workflow,
                         assessment_year=ay,
                         logged_out=logged_out,
+                        file_format=itr_file_format(ay),
                         dry_run=True,
                     ),
                 )
@@ -220,8 +226,11 @@ async def run_download_itr_json_job(db, job, *, workflow: str) -> None:
             s3_key = None
             if scrape.payload is not None and scrape.error_code is None:
                 try:
-                    s3_key = await upload_itr_json(
-                        job.client_id, scrape.assessment_year, scrape.payload
+                    s3_key = await upload_itr_file(
+                        job.client_id,
+                        scrape.assessment_year,
+                        scrape.payload,
+                        scrape.file_format,
                     )
                 except JsonUploadError as exc:
                     scrape = scrape.__class__(
@@ -229,6 +238,7 @@ async def run_download_itr_json_job(db, job, *, workflow: str) -> None:
                         cards=scrape.cards,
                         chosen=scrape.chosen,
                         payload=None,
+                        file_format=scrape.file_format,
                         error_code="S3_UPLOAD_FAILED",
                         error_message=exc.message,
                     )
@@ -242,6 +252,7 @@ async def run_download_itr_json_job(db, job, *, workflow: str) -> None:
                 cards=scrape.cards,
                 chosen=scrape.chosen,
                 s3_key=s3_key,
+                file_format=scrape.file_format,
             )
             if scrape.error_code is None:
                 _complete(job)
