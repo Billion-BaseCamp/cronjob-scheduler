@@ -1,11 +1,12 @@
 """Download one ITR JSON from View Filed Returns.
 
-The assessment-year filter and card list match the status scrape. Download
-JSON is clicked on the filtered list, before View Details. Rectification and
-Revised cards that lack the button fall through to the next older card.
-View Details is only for the e-verified date. Back drops the filter, so the
-year is applied again for the evidence shot. That second apply does not fail
-the download. The chosen file is returned as bytes; the job stores it in S3.
+The list opens on one page. View More is clicked before each year filter so
+every assessment year is available. Download JSON is clicked on the filtered
+list, before View Details. Rectification and Revised cards that lack the
+button fall through to the next older card. View Details is only for the
+e-verified date. Back returns to the one-page list, so View More and the year
+filter run again for the evidence shot. That second pass does not fail the
+download. The chosen file is returned as bytes; the job stores it in S3.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from app.portal.actions.read_filed_return_status import (
     LIFECYCLE_SELECTOR,
     STEP_SELECTOR,
     VIEW_DETAILS_SELECTOR,
+    FILTER_APPLIED,
+    FILTER_NOT_LISTED,
     _apply_ay_filter,
     _cards_for_ay,
     no_filing_message,
@@ -318,7 +321,14 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
             error_message=no_filing_message(ay),
         )
 
-    if not await _apply_ay_filter(page, ay):
+    filtered = await _apply_ay_filter(page, ay)
+    if filtered == FILTER_NOT_LISTED:
+        return _empty(
+            ay,
+            error_code=ITR_NOT_FILED,
+            error_message=no_filing_message(ay),
+        )
+    if filtered != FILTER_APPLIED:
         return _empty(
             ay,
             error_code="UI_DRIFT",
@@ -403,7 +413,7 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
             chosen = replace(chosen, e_verified_on=verified)
         # Back reloads every year. Apply the year again so the evidence shot
         # shows this assessment year. The file is already downloaded.
-        if not await _apply_ay_filter(page, ay):
+        if await _apply_ay_filter(page, ay) != FILTER_APPLIED:
             logger.warning(
                 "Assessment year filter did not re-apply for the evidence shot"
             )
