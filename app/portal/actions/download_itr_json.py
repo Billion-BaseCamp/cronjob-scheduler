@@ -1,8 +1,9 @@
 """Download one ITR file from View Filed Returns.
 
 AY 2021-22 onward uses Download JSON. AY 2020-21 and earlier uses Download XML.
-The list opens on one page. View More is clicked before each year filter so
-every assessment year is available. The download is clicked on the filtered
+The list opens on one page. Items per page is raised, then the footer View
+More and the next-page arrow run until neither remains, before each year
+filter, so every assessment year is available. The download is clicked on the filtered
 list, before View Details. Rectification and Revised cards that lack the
 button fall through to the next older card. View Details is only for the
 e-verified date. Back returns to the one-page list, so View More and the year
