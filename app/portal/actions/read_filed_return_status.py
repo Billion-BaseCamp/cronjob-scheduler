@@ -301,6 +301,8 @@ async def _select_assessment_year(page: Page, ay: str) -> bool:
 
 
 _VIEW_MORE_RE = re.compile(r"^\s*View\s+More\s*$", re.I)
+_RANGE_OF_RE = re.compile(r"(\d+)\s*[–-]\s*(\d+)\s+of\s+(\d+)", re.I)
+_PAGES_RE = re.compile(r"(\d+)\s+of\s+(\d+)\s+pages?", re.I)
 _LIST_PAGINATOR = "app-itr-status mat-paginator"
 _PAGE_SIZE_SELECT = (
     ".mat-mdc-paginator-page-size mat-select, .mat-paginator-page-size mat-select"
@@ -324,25 +326,62 @@ def _page_size_number(text: str) -> int | None:
     return int(digits)
 
 
+def _range_has_more(text: str) -> bool:
+    """True when the pager label still has a later page or a later item."""
+    match = _RANGE_OF_RE.search(text or "")
+    if match is not None and int(match.group(2)) < int(match.group(3)):
+        return True
+    pages = _PAGES_RE.search(text or "")
+    return pages is not None and int(pages.group(1)) < int(pages.group(2))
+
+
 def _list_paginator(page: Page) -> Locator:
     return page.locator(_LIST_PAGINATOR)
 
 
-async def _control_disabled(button: Locator) -> bool:
-    if await button.count() == 0:
-        return True
-    node = button.first
+async def _scroll_list_footer(page: Page) -> None:
     try:
-        if not await node.is_visible():
-            return True
-        if await node.get_attribute("disabled") is not None:
-            return True
-        if await node.get_attribute("aria-disabled") == "true":
-            return True
-        classes = await node.get_attribute("class") or ""
+        await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+    except PlaywrightError:
+        pass
+    paginator = _list_paginator(page)
+    if await paginator.count() == 0:
+        return
+    try:
+        await paginator.last.scroll_into_view_if_needed(timeout=2_000)
+    except PlaywrightError:
+        pass
+
+
+async def _dom_disabled(node: Locator) -> bool:
+    """The pager button can sit in the DOM without a box Playwright calls visible."""
+    try:
+        return bool(
+            await node.evaluate(
+                """el => !!(
+                    el.disabled
+                    || el.getAttribute('aria-disabled') === 'true'
+                    || el.classList.contains('mat-mdc-button-disabled')
+                    || el.classList.contains('mat-button-disabled')
+                )"""
+            )
+        )
     except PlaywrightError:
         return True
-    return "disabled" in classes.split()
+
+
+async def _click_control(node: Locator) -> None:
+    try:
+        await node.scroll_into_view_if_needed(timeout=2_000)
+    except PlaywrightError:
+        pass
+    try:
+        if await node.is_visible():
+            await node.click(timeout=3_000)
+            return
+    except PlaywrightTimeoutError:
+        pass
+    await node.evaluate("el => el.click()")
 
 
 async def _range_text(page: Page) -> str:
@@ -384,17 +423,34 @@ async def _shown_page_size(page: Page) -> int | None:
     return _page_size_number(text)
 
 
+async def _open_page_size_menu(paginator: Locator) -> None:
+    """The touch target is aria-hidden on View Filed Returns. Click the select."""
+    select = paginator.locator(_PAGE_SIZE_SELECT)
+    touch = paginator.locator(_PAGE_SIZE_TOUCH)
+    if await touch.count():
+        try:
+            if await touch.first.is_visible():
+                await touch.first.click(timeout=2_000)
+                return
+        except PlaywrightError:
+            pass
+    if await select.count() == 0:
+        return
+    try:
+        await select.first.click(timeout=2_000)
+    except PlaywrightTimeoutError:
+        await select.first.evaluate("el => el.click()")
+
+
 async def _set_largest_page_size(page: Page) -> None:
     """The short list is 6 per page. The largest option loads more before paging."""
-    select = _list_paginator(page).locator(_PAGE_SIZE_SELECT)
+    await _scroll_list_footer(page)
+    paginator = _list_paginator(page)
+    select = paginator.locator(_PAGE_SIZE_SELECT)
     try:
         if await select.count() == 0:
             return
-        touch = _list_paginator(page).locator(_PAGE_SIZE_TOUCH)
-        if await touch.count():
-            await touch.first.click(timeout=_FILTER_TIMEOUT_MS)
-        else:
-            await select.first.click(timeout=_FILTER_TIMEOUT_MS)
+        await _open_page_size_menu(paginator)
         options = page.locator(_PAGE_SIZE_OPTION)
         await options.first.wait_for(state="visible", timeout=_FILTER_TIMEOUT_MS)
         sizes: list[tuple[int, int]] = []
@@ -474,30 +530,58 @@ async def _footer_view_more(page: Page) -> Locator | None:
     return None
 
 
+async def _enabled_next(page: Page) -> Locator | None:
+    await _scroll_list_footer(page)
+    buttons = _list_paginator(page).locator(_NEXT_PAGE)
+    count = await buttons.count()
+    fallback: Locator | None = None
+    for index in range(count):
+        node = buttons.nth(index)
+        if await _dom_disabled(node):
+            continue
+        try:
+            if await node.is_visible():
+                return node
+        except PlaywrightError:
+            pass
+        if fallback is None:
+            fallback = node
+    return fallback
+
+
 async def _click_view_more(page: Page) -> None:
     """Load every filing before Filter. View More is absent until the last short page."""
     try:
         await _set_largest_page_size(page)
         seen: set[tuple[str, str]] = set()
         for _ in range(_LOAD_STEPS):
+            await _scroll_list_footer(page)
             view_more = await _footer_view_more(page)
-            nxt = _list_paginator(page).locator(_NEXT_PAGE)
-            if view_more is None and await _control_disabled(nxt):
-                logger.info(
-                    "Filed-return list is loaded (%s cards)",
-                    await page.locator(CARD_SELECTOR).count(),
-                )
+            nxt = await _enabled_next(page)
+            before = await _range_text(page)
+            if view_more is None and nxt is None:
+                if _range_has_more(before):
+                    logger.warning(
+                        "Filed-return range %s still has another page, but Next is not usable",
+                        before,
+                    )
+                else:
+                    logger.info(
+                        "Filed-return list is loaded (%s cards, %s)",
+                        await page.locator(CARD_SELECTOR).count(),
+                        before or "no range",
+                    )
                 return
             action = "View More" if view_more is not None else "next page"
-            before = await _range_text(page)
             if (action, before) in seen:
                 logger.info("Filed-return list stopped advancing at %s", before or "the start")
                 return
             seen.add((action, before))
-            target = view_more if view_more is not None else nxt.first
+            target = view_more if view_more is not None else nxt
+            if target is None:
+                return
             logger.info("Loading filed returns via %s from %s", action, before or "the first page")
-            await target.scroll_into_view_if_needed()
-            await target.click(timeout=_FILTER_TIMEOUT_MS)
+            await _click_control(target)
             await _wait_range_change(page, before)
         logger.warning("Stopped before every filed return was loaded")
     except (PlaywrightTimeoutError, PlaywrightError):

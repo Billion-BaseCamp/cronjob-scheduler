@@ -26,11 +26,12 @@ _PAGE = """
       <mat-select class="mat-mdc-select" style="display:inline-block;width:48px;height:24px">
         <span class="mat-mdc-select-value-text"><span class="mat-mdc-select-min-line">06</span></span>
       </mat-select>
-      <div class="mat-mdc-paginator-touch-target"
-           style="position:absolute;inset:0"></div>
+      <div class="mat-mdc-paginator-touch-target" aria-hidden="true"
+           style="__TOUCH_STYLE__"></div>
     </div>
     <div class="mat-mdc-paginator-range-label"></div>
-    <button type="button" class="mat-mdc-paginator-navigation-next">></button>
+    <button type="button" class="mat-mdc-paginator-navigation-next"
+            style="__NEXT_STYLE__">></button>
   </mat-paginator>
   <div style="display:flex;justify-content:space-between;margin-top:16px">
     <button type="button" class="largeButton">&lt; Back</button>
@@ -98,7 +99,7 @@ _PAGE = """
   }
 
   function closeMenu() { overlay.innerHTML = ''; }
-  document.querySelector('.mat-mdc-paginator-touch-target').addEventListener('click', () => {
+  function openMenu() {
     closeMenu();
     const backdrop = document.createElement('div');
     backdrop.className = 'cdk-overlay-backdrop cdk-overlay-backdrop-showing';
@@ -116,7 +117,9 @@ _PAGE = """
       pane.appendChild(option);
     }
     overlay.append(backdrop, pane);
-  });
+  }
+  document.querySelector('.mat-mdc-paginator-touch-target').addEventListener('click', openMenu);
+  document.querySelector('mat-select').addEventListener('click', openMenu);
   document.querySelector('.mat-mdc-paginator-navigation-next').addEventListener('click', () => {
     if (page >= pageCount()) return;
     nextClicks += 1;
@@ -131,8 +134,14 @@ _PAGE = """
 """
 
 
-def _html(sizes: list[str]) -> str:
-    return _PAGE.replace("__SIZES__", json.dumps(sizes))
+def _html(sizes: list[str], *, hidden_controls: bool = False) -> str:
+    touch = "display:none" if hidden_controls else "position:absolute;inset:0"
+    nxt = "visibility:hidden" if hidden_controls else ""
+    return (
+        _PAGE.replace("__SIZES__", json.dumps(sizes))
+        .replace("__TOUCH_STYLE__", touch)
+        .replace("__NEXT_STYLE__", nxt)
+    )
 
 
 @pytest.fixture
@@ -162,9 +171,7 @@ async def _state(page) -> dict[str, str]:
     )
 
 
-@pytest.mark.parametrize("sizes", [["06"], ["06", "10"]])
-async def test_footer_view_more_and_next_load_every_filing(page, sizes: list[str]) -> None:
-    await page.set_content(_html(sizes))
+async def _assert_loaded(page, sizes: list[str]) -> dict[str, str]:
     await _click_view_more(page)
     state = await _state(page)
     assert state["expanded"] == "1"
@@ -174,3 +181,17 @@ async def test_footer_view_more_and_next_load_every_filing(page, sizes: list[str
     assert state["pageSize"] == str(max(int(size) for size in sizes))
     if sizes == ["06"]:
         assert int(state["nextClicks"]) >= 1
+    return state
+
+
+@pytest.mark.parametrize("sizes", [["06"], ["06", "10"]])
+async def test_footer_view_more_and_next_load_every_filing(page, sizes: list[str]) -> None:
+    await page.set_content(_html(sizes))
+    await _assert_loaded(page, sizes)
+
+
+async def test_hidden_page_size_target_still_pages_to_view_more(page) -> None:
+    """Staging keeps the touch target and Next in the DOM without a visible box."""
+    sizes = ["06"]
+    await page.set_content(_html(sizes, hidden_controls=True))
+    await _assert_loaded(page, sizes)
