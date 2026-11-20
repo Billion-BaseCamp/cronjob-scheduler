@@ -98,6 +98,7 @@ class Settings:
     WORKER_POLL_SECONDS: float = _env_float("WORKER_POLL_SECONDS", "2")
     WORKER_CONCURRENCY: int = min(8, max(1, _env_int("WORKER_CONCURRENCY", 2)))
     WORKER_HEARTBEAT_SECONDS: float = _env_float("WORKER_HEARTBEAT_SECONDS", "30")
+    # Cooldown applied between consecutive DOWNLOAD_AIS_JSON jobs on the same slot.
     WORKER_JOB_COOLDOWN_SECONDS: float = max(
         0.0, _env_float("WORKER_JOB_COOLDOWN_SECONDS", "3.0")
     )

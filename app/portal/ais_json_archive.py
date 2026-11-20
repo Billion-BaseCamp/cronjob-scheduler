@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -14,6 +14,17 @@ logger = logging.getLogger(__name__)
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _dialect_name(db: AsyncSession) -> str | None:
+    bind = getattr(db, "bind", None)
+    if bind is None and hasattr(db, "get_bind"):
+        try:
+            bind = db.get_bind()
+        except Exception:
+            bind = None
+    name = getattr(getattr(bind, "dialect", None), "name", None)
+    return name if isinstance(name, str) else None
 
 
 async def remember_ais_json_archive(
@@ -39,6 +50,14 @@ async def remember_ais_json_archive(
         )
         return
 
+    # Serialize concurrent upserts for the same (client_id, s3_key) without
+    # requiring a schema-level unique constraint on itr_ais_json_archives.
+    if _dialect_name(db) != "sqlite":
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
+            {"lock_key": f"ais-archive:{client_id}:{s3_key}"},
+        )
+
     existing = (
         await db.execute(
             select(ITRAisJsonArchive)
@@ -49,7 +68,7 @@ async def remember_ais_json_archive(
             .order_by(ITRAisJsonArchive.created_at.desc())
             .limit(1)
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
 
     if existing is not None:
         if itr_return_id is not None and existing.itr_return_id is None:

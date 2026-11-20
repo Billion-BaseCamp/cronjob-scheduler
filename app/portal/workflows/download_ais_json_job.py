@@ -273,14 +273,6 @@ async def run_download_ais_json_job(db, job, *, workflow: str) -> None:
                     )
                     file_size = len(scrape.payload)
                     fetched_at = _now()
-                    await remember_ais_json_archive(
-                        db,
-                        client_id=job.client_id,
-                        itr_return_id=getattr(job, "itr_return_id", None),
-                        s3_key=s3_key,
-                        original_filename=ais_json_filename(pan, fy),
-                        file_size_bytes=file_size,
-                    )
                 except AisJsonUploadError as exc:
                     scrape = scrape.__class__(
                         status="failed",
@@ -289,6 +281,43 @@ async def run_download_ais_json_job(db, job, *, workflow: str) -> None:
                         error_message=exc.message,
                         captcha_attempts=scrape.captcha_attempts,
                     )
+
+                if s3_key is not None and file_size is not None:
+                    try:
+                        nested = (
+                            db.begin_nested()
+                            if db is not None and hasattr(db, "begin_nested")
+                            else None
+                        )
+                        if nested is not None and hasattr(nested, "__aenter__"):
+                            async with nested:
+                                await remember_ais_json_archive(
+                                    db,
+                                    client_id=job.client_id,
+                                    itr_return_id=getattr(job, "itr_return_id", None),
+                                    s3_key=s3_key,
+                                    original_filename=ais_json_filename(pan, fy),
+                                    file_size_bytes=file_size,
+                                )
+                        else:
+                            if hasattr(nested, "close"):
+                                nested.close()
+                            await remember_ais_json_archive(
+                                db,
+                                client_id=job.client_id,
+                                itr_return_id=getattr(job, "itr_return_id", None),
+                                s3_key=s3_key,
+                                original_filename=ais_json_filename(pan, fy),
+                                file_size_bytes=file_size,
+                            )
+                    except Exception:
+                        logger.warning(
+                            "Failed to record AIS JSON archive for job %s (s3_key=%s); "
+                            "S3 file is stored so job will still complete.",
+                            job.id,
+                            s3_key,
+                            exc_info=True,
+                        )
 
             job.current_step = STEPS[4]
             ais_logged_out = await run_ais_logout(ais_page)
