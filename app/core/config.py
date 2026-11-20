@@ -98,6 +98,16 @@ class Settings:
     WORKER_POLL_SECONDS: float = _env_float("WORKER_POLL_SECONDS", "2")
     WORKER_CONCURRENCY: int = min(8, max(1, _env_int("WORKER_CONCURRENCY", 2)))
     WORKER_HEARTBEAT_SECONDS: float = _env_float("WORKER_HEARTBEAT_SECONDS", "30")
+    # Cooldown applied between consecutive DOWNLOAD_AIS_JSON jobs on the same slot.
+    WORKER_JOB_COOLDOWN_SECONDS: float = max(
+        0.0, _env_float("WORKER_JOB_COOLDOWN_SECONDS", "3.0")
+    )
+    PORTAL_ACTION_MIN_DELAY_SECONDS: float = max(
+        0.0, _env_float("PORTAL_ACTION_MIN_DELAY_SECONDS", "0.6")
+    )
+    PORTAL_ACTION_MAX_DELAY_SECONDS: float = max(
+        0.0, _env_float("PORTAL_ACTION_MAX_DELAY_SECONDS", "1.4")
+    )
     MAX_ATTEMPTS: int = _env_int("MAX_ATTEMPTS", 3)
     PORTAL_AUTOMATION_TIMEOUT_MINUTES: int = _env_int(
         "PORTAL_AUTOMATION_TIMEOUT_MINUTES", 15
@@ -137,6 +147,18 @@ class Settings:
 
     S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")
     S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "ap-south-1"))
+
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
+    GEMINI_CAPTCHA_MODEL: str = (
+        os.getenv("GEMINI_CAPTCHA_MODEL", "gemini-3.1-flash-lite").strip()
+        or "gemini-3.1-flash-lite"
+    )
+    GEMINI_CAPTCHA_TIMEOUT_SECONDS: float = _env_float(
+        "GEMINI_CAPTCHA_TIMEOUT_SECONDS", "20"
+    )
+    AIS_CAPTCHA_MAX_ATTEMPTS: int = max(
+        1, _env_int("AIS_CAPTCHA_MAX_ATTEMPTS", 4)
+    )
 
     class Config:
         env_file = ".env"
