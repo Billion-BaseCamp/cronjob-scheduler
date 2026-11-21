@@ -3,12 +3,13 @@
 AY 2021-22 onward uses Download JSON. AY 2020-21 and earlier uses Download XML.
 The list opens on one page. Items per page is raised, then the footer View
 More and the next-page arrow run until neither remains, before each year
-filter, so every assessment year is available. The download is clicked on the filtered
-list, before View Details. Rectification and Revised cards that lack the
-button fall through to the next older card. View Details is only for the
-e-verified date. Back returns to the one-page list, so View More and the year
-filter run again for the evidence shot. That second pass does not fail the
-download. The chosen file is returned as bytes; the job stores it in S3.
+filter, so every assessment year is available. Filter clicks Reset, then
+the one year. The download is clicked on the filtered list, before View
+Details. Rectification and Revised cards that lack the button fall through
+to the next older card. View Details is only for the e-verified date. Back
+returns to the one-page list and clears the year tick. The job applies the
+evidence year once after the loop. The chosen file is returned as bytes;
+the job stores it in S3.
 """
 
 from __future__ import annotations
@@ -37,8 +38,8 @@ from app.portal.actions.read_filed_return_status import (
     FILTER_NOT_LISTED,
     _apply_ay_filter,
     _cards_for_ay,
+    _filing_date_of,
     no_filing_message,
-    parse_filing_date,
     portal_assessment_year,
 )
 from app.portal.itr_json import (
@@ -163,7 +164,7 @@ async def _snapshot_page(
         snapshots.append(
             FiledReturnCard(
                 filing_type=parse_filing_type(text),
-                filing_date=parse_filing_date(text),
+                filing_date=await _filing_date_of(card),
                 has_download_json=button is not None,
                 page_index=page_index,
                 card_index=index,
@@ -446,12 +447,6 @@ async def download_itr_json(page: Page, assessment_year: str) -> ItrJsonScrape:
         verified = await _e_verified_from_details(page, chosen, ay)
         if verified:
             chosen = replace(chosen, e_verified_on=verified)
-        # Back reloads every year. Apply the year again so the evidence shot
-        # shows this assessment year. The file is already downloaded.
-        if await _apply_ay_filter(page, ay) != FILTER_APPLIED:
-            logger.warning(
-                "Assessment year filter did not re-apply for the evidence shot"
-            )
 
     return ItrJsonScrape(
         assessment_year=ay,

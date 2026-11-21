@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 
 from app.portal.itr_json import (
+    assessment_years_from_job,
     FiledReturnCard,
     choose_itr_json_card,
     counts_by_filing_type,
@@ -188,7 +189,81 @@ def test_s3_key_rejects_a_path(assessment_year: str) -> None:
         itr_json_s3_key("client", assessment_year)
 
 
+def test_job_years_come_from_the_list_or_the_single_column() -> None:
+    class _Job:
+        def __init__(self, assessment_year: str, result: object) -> None:
+            self.assessment_year = assessment_year
+            self.result = result
+
+    assert assessment_years_from_job(
+        _Job("2026-27", {"assessment_years": ["2024-25", "2026-27", "2024-25"]})
+    ) == ["2024-25", "2026-27"]
+    assert assessment_years_from_job(_Job("2021-22", None)) == ["2021-22"]
+
+
 def test_itr_json_must_be_an_object() -> None:
     assert is_itr_json(b'\xef\xbb\xbf{"ITR": {"ITR2": {}}}')
     assert not is_itr_json(b"not json")
     assert not is_itr_json(b"[1]")
+
+
+_TIMELINE_CARD = """
+<app-itr-status>
+  <mat-card class="contextBox">
+    <mat-label class="contentHeadingText">A.Y. 2021-22</mat-label>
+    <div>
+      <mat-label>Filing Type</mat-label>
+      <mat-label class="leftSideVal">Original</mat-label>
+    </div>
+    <div class="matStepStatus">Refund Credited to your Bank A/c</div>
+    <div class="matStepDate">Feb 17, 2024</div>
+    <div class="matStepStatus">Rectification processed with refund due</div>
+    <div class="matStepDate">Feb 5, 2024</div>
+    <div class="valueBox">
+      <mat-label class="rightsideLabel">ITR :</mat-label>
+      <mat-label class="fieldVal">ITR-2</mat-label>
+    </div>
+    <div class="valueBox">
+      <mat-label class="rightsideLabel">Acknowledgement No :</mat-label>
+      <mat-label class="fieldVal">787204650311221</mat-label>
+    </div>
+    <div class="valueBox">
+      <mat-label class="rightsideLabel">Filing Date :</mat-label>
+      <mat-label class="fieldVal">Dec 31, 2021</mat-label>
+    </div>
+    <div class="valueBox">
+      <mat-label class="rightsideLabel">Filing Section :</mat-label>
+      <mat-label class="fieldVal">139(1)</mat-label>
+    </div>
+    <button type="button" class="downloadButton">Download JSON</button>
+  </mat-card>
+</app-itr-status>
+"""
+
+
+async def test_filing_date_is_the_labeled_box_not_the_timeline() -> None:
+    """The stepper's newest date is a processing step, not the filing date."""
+    playwright_api = pytest.importorskip("playwright.async_api")
+    from app.portal.actions.download_itr_json import _snapshot_page
+
+    async with playwright_api.async_playwright() as playwright:
+        try:
+            browser = await playwright.chromium.launch()
+        except Exception as exc:
+            pytest.skip(f"Chromium unavailable: {exc}")
+        page = await browser.new_page()
+        try:
+            await page.set_content(_TIMELINE_CARD)
+            cards = await _snapshot_page(page, "2021-22", 0, "json")
+        finally:
+            await browser.close()
+
+    assert len(cards) == 1
+    card = cards[0]
+    assert card.filing_date == datetime(2021, 12, 31)
+    assert card.filing_type == "Original"
+    assert card.itr_form == "ITR-2"
+    assert card.acknowledgement_no == "787204650311221"
+    assert card.filing_section == "139(1)"
+    assert card.e_verified_on == ""
+    assert card.has_download_json is True

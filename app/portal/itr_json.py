@@ -116,6 +116,25 @@ def parse_e_verified_on(text: str) -> str:
     return _iso_date(match.group(1))
 
 
+def assessment_years_from_job(job: object) -> list[str]:
+    """Years queued on the job. One year still uses ``assessment_year``."""
+    result = getattr(job, "result", None)
+    years: list[str] = []
+    if isinstance(result, dict):
+        raw = result.get("assessment_years")
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, str):
+                    continue
+                text = item.strip()
+                if text and text not in years:
+                    years.append(text)
+    if years:
+        return years
+    single = (getattr(job, "assessment_year", None) or "").strip()
+    return [single] if single else []
+
+
 def itr_file_format(assessment_year: str) -> str:
     """``json`` from AY 2021-22. ``xml`` through AY 2020-21."""
     start = (assessment_year or "").strip().split("-", 1)[0]
