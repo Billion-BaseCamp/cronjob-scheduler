@@ -11,8 +11,8 @@ List page (``#/dashboard/itrStatus``, ``app-itr-status``):
      View More; it appears on the last page of the short list, and that
      click grows the list so the year filter contains every year.
   2. Open Filter (``button#filterbtn1``)
-  3. Select AY, click Assessment Year label to close the overlay, apply
-     (``button#okButton``)
+  3. Click Reset, select AY, click the Assessment Year label to close
+     the overlay, apply (``button#okButton``)
   4. Among remaining cards, open View Details on the latest Filing Date
 
 Lifecycle page (``app-itr-status-life-cycle``): read Filing Type from
@@ -49,7 +49,9 @@ _ITRV_RECEIVED = "itrv received"
 _FILING_TYPE_LABEL_RE = re.compile(r"Filing Type")
 FILTER_OPEN_SELECTOR = "button#filterbtn1"
 FILTER_APPLY_SELECTOR = "button#okButton"
+FILTER_RESET_SELECTOR = "div.filterBox button.normal-button-tertiary"
 FILTER_PANEL_SELECTOR = "div.filterBox"
+_FILTER_RESET_RE = re.compile(r"^\s*Reset\s*$")
 AY_SELECT_SELECTOR = 'div.filterBox mat-select[formcontrolname="ay"]'
 AY_FILTER_LABEL_SELECTOR = "mat-label.filterLabel"
 OVERLAY_BACKDROP_SELECTOR = (
@@ -588,6 +590,35 @@ async def _click_view_more(page: Page) -> None:
         logger.warning("Could not load every filed return before Filter", exc_info=True)
 
 
+async def _reset_filter(page: Page) -> None:
+    """Clear Assessment Year and Filing Type. Leave the dialog open."""
+    reset = page.locator(FILTER_RESET_SELECTOR).filter(has_text=_FILTER_RESET_RE)
+    try:
+        if await reset.count() == 0 or not await reset.first.is_visible():
+            logger.info("Filter Reset is not on the dialog")
+            return
+        if await reset.first.is_disabled():
+            logger.info("Filter Reset is disabled")
+            return
+        logger.info("Clicking Filter Reset")
+        await reset.first.click(timeout=_FILTER_TIMEOUT_MS)
+    except PlaywrightError:
+        logger.warning("Filter Reset did not click", exc_info=True)
+        return
+    select = page.locator(AY_SELECT_SELECTOR)
+    try:
+        if await select.is_visible():
+            return
+    except PlaywrightError:
+        pass
+    logger.info("Filter dialog closed after Reset; opening it again")
+    await page.locator(FILTER_OPEN_SELECTOR).click()
+    await page.locator(FILTER_APPLY_SELECTOR).wait_for(
+        state="visible",
+        timeout=_FILTER_TIMEOUT_MS,
+    )
+
+
 async def _apply_ay_filter(page: Page, assessment_year: str) -> str:
     """``applied``, ``not_listed`` when the year is absent, or ``failed``."""
     ay = assessment_year.strip()
@@ -603,6 +634,7 @@ async def _apply_ay_filter(page: Page, assessment_year: str) -> str:
             state="visible",
             timeout=_FILTER_TIMEOUT_MS,
         )
+        await _reset_filter(page)
         if not await _select_assessment_year(page, ay):
             await _close_filter_dialog(page)
             return FILTER_NOT_LISTED
