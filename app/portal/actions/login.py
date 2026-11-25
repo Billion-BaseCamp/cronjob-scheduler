@@ -261,6 +261,83 @@ async def _first_visible(
     return winner
 
 
+async def _poll_invalid_password(page: Page, timeout_ms: int) -> bool:
+    """True when the password page shows the portal's rejected-password error.
+
+    Checked alongside the logged-in page so a wrong password does not sit
+    through the whole login wait.
+    """
+    loc = page.locator(PASSWORD_MAT_ERROR_SELECTOR).first
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + (timeout_ms / 1000)
+    while True:
+        remaining_ms = int((deadline - loop.time()) * 1000)
+        if remaining_ms <= 0:
+            break
+        try:
+            visible = await loc.is_visible()
+        except PlaywrightTimeout:
+            visible = False
+        if visible:
+            try:
+                text = (await loc.inner_text()).strip()
+            except Exception:
+                text = ""
+            if is_assured_invalid_password(
+                page_text=text, url=page.url or ""
+            ):
+                logger.info("Portal rejected the password")
+                return True
+        await asyncio.sleep(0.4)
+    # The race treats this timeout as nothing found and reads the page once more.
+    raise PlaywrightTimeout("invalid password not shown")
+
+
+async def _race_after_password(
+    page: Page,
+    logged_in: Locator,
+    login_here: Locator,
+    vault: Locator,
+) -> Optional[str]:
+    """Logged-in page, dual login, vault, or the rejected-password error."""
+    invalid_task = asyncio.create_task(_poll_invalid_password(page, 30_000))
+    visible_task = asyncio.create_task(
+        _first_visible(
+            [
+                ("logged_in", logged_in),
+                ("login_here", login_here),
+                ("vault", vault),
+            ],
+            30_000,
+        )
+    )
+    done, pending = await asyncio.wait(
+        {invalid_task, visible_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    for task in pending:
+        task.cancel()
+    for task in pending:
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    visible = (
+        visible_task.result()
+        if visible_task in done and visible_task.exception() is None
+        else None
+    )
+    if visible:
+        return visible
+    if (
+        invalid_task in done
+        and invalid_task.exception() is None
+        and invalid_task.result()
+    ):
+        return "invalid_password"
+    return None
+
+
 async def _timeout_logged_in(page: Page) -> LoginOutcome:
     logger.warning("Logged-in page missing url=%s", page.url)
     password_outcome = await _classify_password_error(page, None)
@@ -300,14 +377,9 @@ async def _confirm_logged_in(
             return failed
         return await _wait_logged_in(page, logged_in, vault)
 
-    which = await _first_visible(
-        [
-            ("logged_in", logged_in),
-            ("login_here", login_here),
-            ("vault", vault),
-        ],
-        30_000,
-    )
+    which = await _race_after_password(page, logged_in, login_here, vault)
+    if which == "invalid_password":
+        return LoginOutcome.INVALID_PASSWORD
     if which == "logged_in":
         return LoginOutcome.SUCCESS
     if which == "vault":
