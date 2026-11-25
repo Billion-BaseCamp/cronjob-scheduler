@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 
 from playwright.async_api import TimeoutError as PlaywrightTimeout
@@ -26,6 +27,23 @@ class _Loc:
 
     async def click(self, timeout: int = 0) -> None:
         self.clicked = True
+
+
+class _HangLoc:
+    async def wait_for(self, *, state: str, timeout: int) -> None:
+        await asyncio.sleep(timeout / 1000)
+        raise PlaywrightTimeout("not visible")
+
+
+class _ErrorLoc:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    async def is_visible(self, timeout: int = 0) -> bool:
+        return True
+
+    async def inner_text(self) -> str:
+        return self.text
 
 
 class _Page:
@@ -75,6 +93,49 @@ def test_expected_dual_login_that_shows_vault_instead(monkeypatch) -> None:
 
     assert outcome == LoginOutcome.VAULT_HIGHER_SECURITY
     assert login_here.clicked is False
+
+
+def test_rejected_password_stops_without_the_login_wait(monkeypatch) -> None:
+    hang = _HangLoc()
+    locators = {
+        login.LOGGED_IN_SELECTOR: hang,
+        login.VAULT_HIGHER_SECURITY_SELECTOR: hang,
+        login.PASSWORD_MAT_ERROR_SELECTOR: _ErrorLoc(
+            "Error : Invalid Password, Please retry."
+        ),
+    }
+    page = _Page()
+    page.locator = lambda selector: SimpleNamespace(first=locators[selector])
+    monkeypatch.setattr(login, "_login_here_button", lambda _page: hang)
+
+    started = time.monotonic()
+    outcome = _run(login._confirm_logged_in(page))
+    elapsed = time.monotonic() - started
+
+    assert outcome == LoginOutcome.INVALID_PASSWORD
+    assert elapsed < 5
+
+
+def test_logged_in_page_still_wins_over_another_password_message(monkeypatch) -> None:
+    class _Shown:
+        async def wait_for(self, *, state: str, timeout: int) -> None:
+            return None
+
+    hang = _HangLoc()
+    locators = {
+        login.LOGGED_IN_SELECTOR: _Shown(),
+        login.VAULT_HIGHER_SECURITY_SELECTOR: hang,
+        login.PASSWORD_MAT_ERROR_SELECTOR: _ErrorLoc(
+            "Please confirm your secure access message"
+        ),
+    }
+    page = _Page()
+    page.locator = lambda selector: SimpleNamespace(first=locators[selector])
+    monkeypatch.setattr(login, "_login_here_button", lambda _page: hang)
+
+    outcome = _run(login._confirm_logged_in(page))
+
+    assert outcome == LoginOutcome.SUCCESS
 
 
 def test_filed_return_status_vault_keeps_password() -> None:
