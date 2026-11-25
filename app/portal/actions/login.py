@@ -275,7 +275,7 @@ async def _poll_invalid_password(page: Page, timeout_ms: int) -> bool:
         if remaining_ms <= 0:
             break
         try:
-            visible = await loc.is_visible(timeout=min(400, remaining_ms))
+            visible = await loc.is_visible()
         except PlaywrightTimeout:
             visible = False
         if visible:
@@ -288,7 +288,8 @@ async def _poll_invalid_password(page: Page, timeout_ms: int) -> bool:
             ):
                 logger.info("Portal rejected the password")
                 return True
-            await asyncio.sleep(0.4)
+        await asyncio.sleep(0.4)
+    # The race treats this timeout as nothing found and reads the page once more.
     raise PlaywrightTimeout("invalid password not shown")
 
 
