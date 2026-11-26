@@ -303,7 +303,7 @@ async def run_download_ais_json_job(db, job, *, workflow: str) -> None:
                         archive_recorded = False
                         logger.warning(
                             "Failed to record AIS JSON archive for job %s (s3_key=%s); "
-                            "S3 file is stored so job will still complete.",
+                            "S3 file is stored, failing job with ARCHIVE_RECORD_FAILED.",
                             job.id,
                             s3_key,
                             exc_info=True,
@@ -328,7 +328,16 @@ async def run_download_ais_json_job(db, job, *, workflow: str) -> None:
                 archive_recorded=archive_recorded,
             )
 
-            if scrape.status in {"downloaded", "no_data", "year_not_in_dropdown"}:
+            if scrape.status == "downloaded" and archive_recorded is False:
+                _fail(
+                    job,
+                    error_code="ARCHIVE_RECORD_FAILED",
+                    message=(
+                        "AIS JSON was uploaded to S3, but the archive record "
+                        "could not be saved."
+                    ),
+                )
+            elif scrape.status in {"downloaded", "no_data", "year_not_in_dropdown"}:
                 _complete(
                     job,
                     error_code=scrape.error_code,

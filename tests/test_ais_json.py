@@ -43,6 +43,10 @@ def test_sanitize_captcha_text() -> None:
     assert sanitize_captcha_text(" K C I M 7 ") == "KCIM7"
     assert sanitize_captcha_text("`ab12CD`") == "ab12CD"
     assert sanitize_captcha_text("The captcha is XY98Z.") == "XY98Z"
+    assert sanitize_captcha_text("I see KCIM7 in the image.") == "KCIM7"
+    assert sanitize_captcha_text("The text shown is abCD.") == "abCD"
+    assert sanitize_captcha_text("Captcha: 123456") == "123456"
+    assert sanitize_captcha_text("I cannot read this image.") is None
     assert sanitize_captcha_text("") is None
     assert sanitize_captcha_text("...") is None
 
@@ -90,6 +94,9 @@ def test_solve_captcha_with_gemini_parses_candidate(monkeypatch) -> None:
     assert "gemini-3.1-flash-lite:generateContent" in captured["url"]
     assert captured["headers"]["x-goog-api-key"] == "test-key"
     assert captured["timeout"] == 12.0
+    assert captured["json"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingBudget": 0
+    }
 
 
 def test_solve_captcha_with_gemini_rejects_missing_key_or_http_error(monkeypatch) -> None:
@@ -458,8 +465,8 @@ def test_download_ais_json_job_completes_when_archive_upsert_fails(monkeypatch) 
 
     asyncio.run(job_mod.run_download_ais_json_job(fake_db, job, workflow="DOWNLOAD_AIS_JSON"))
 
-    assert job.status == "completed"
-    assert job.error_code is None
+    assert job.status == "failed"
+    assert job.error_code == "ARCHIVE_RECORD_FAILED"
     assert job.result["ais_json_s3_key"] == expected_key
     assert job.result["archive_recorded"] is False
     assert nested_events == ["enter", "exit:RuntimeError"]
@@ -555,7 +562,8 @@ def test_download_ais_json_job_marks_archive_recorded_false_when_model_missing(
 
     asyncio.run(job_mod.run_download_ais_json_job(fake_db, job, workflow="DOWNLOAD_AIS_JSON"))
 
-    assert job.status == "completed"
+    assert job.status == "failed"
+    assert job.error_code == "ARCHIVE_RECORD_FAILED"
     assert job.result["ais_json_s3_key"] == expected_key
     assert job.result["archive_recorded"] is False
 
@@ -707,4 +715,82 @@ def test_worker_cooldown_applies_only_to_ais_jobs(monkeypatch) -> None:
 
     # CHECK_ITR_VERIFICATION did NOT sleep; DOWNLOAD_AIS_JSON slept 3.0s; empty queue slept 2.0s.
     assert timeouts == [3.0, 2.0]
+
+
+def test_find_activity_download_icon_strict_ref_and_today_ist_fallback() -> None:
+    pytest.importorskip("playwright")
+    from datetime import datetime, timedelta, timezone
+    from app.portal.actions.download_ais_json import (
+        _find_activity_download_icon,
+        _today_ist_date_regex,
+    )
+
+    class _FakeIcon:
+        def __init__(self, visible: bool, tag: str) -> None:
+            self._visible = visible
+            self.tag = tag
+            self.first = self
+
+        async def count(self) -> int:
+            return 1 if self._visible else 0
+
+        async def is_visible(self) -> bool:
+            return self._visible
+
+    class _FakeRows:
+        def __init__(self, items: list[tuple[str, bool, str]]) -> None:
+            self._items = items
+
+        def filter(self, *, has_text):
+            matched = [it for it in self._items if has_text.search(it[0])]
+            return _FakeRows(matched)
+
+        async def count(self) -> int:
+            return len(self._items)
+
+        @property
+        def first(self):
+            text, visible, tag = self._items[0]
+            return SimpleNamespace(locator=lambda _sel: _FakeIcon(visible, tag))
+
+    ist_now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    today_str = ist_now.strftime("%d-%b-%Y")
+    old_str = (ist_now - timedelta(days=3)).strftime("%d-%b-%Y")
+
+    # Case 1: reference_id row exists but is still processing (no visible icon) -> must NOT fall back to old FY row!
+    rows_processing = _FakeRows(
+        [
+            (f"{today_str} AIS Downloaded - JSON F.Y. 2025-26 REF999", False, "processing"),
+            (f"{old_str} AIS Downloaded - JSON F.Y. 2025-26 REF111", True, "old"),
+        ]
+    )
+    page_processing = SimpleNamespace(locator=lambda _sel: rows_processing)
+    picked = asyncio.run(
+        _find_activity_download_icon(
+            page_processing, financial_year="2025-26", reference_id="REF999"
+        )
+    )
+    assert picked is None
+
+    # Case 2: reference_id=None -> skips 3-day-old row, matches only today's IST row.
+    rows_no_ref = _FakeRows(
+        [
+            (f"{old_str} AIS Downloaded - JSON F.Y. 2025-26 OLD", True, "old"),
+            (f"{today_str} AIS Downloaded - JSON F.Y. 2025-26 NEW", True, "today"),
+        ]
+    )
+    page_no_ref = SimpleNamespace(locator=lambda _sel: rows_no_ref)
+    picked_today = asyncio.run(
+        _find_activity_download_icon(
+            page_no_ref, financial_year="2025-26", reference_id=None
+        )
+    )
+    assert picked_today is not None and picked_today.tag == "today"
+
+    # Case 3: today regex matches DD-MMM-YYYY, DD/MM/YYYY, and YYYY-MM-DD.
+    rx = _today_ist_date_regex()
+    assert rx.search(ist_now.strftime("%d-%b-%Y"))
+    assert rx.search(ist_now.strftime("%d/%m/%Y"))
+    assert rx.search(ist_now.strftime("%Y-%m-%d"))
+    assert not rx.search(old_str)
 

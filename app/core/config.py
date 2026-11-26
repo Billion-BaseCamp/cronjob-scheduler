@@ -159,6 +159,9 @@ class Settings:
     AIS_CAPTCHA_MAX_ATTEMPTS: int = max(
         1, _env_int("AIS_CAPTCHA_MAX_ATTEMPTS", 4)
     )
+    AIS_ACTIVITY_HISTORY_TIMEOUT_SECONDS: float = max(
+        30.0, _env_float("AIS_ACTIVITY_HISTORY_TIMEOUT_SECONDS", "180.0")
+    )
 
     class Config:
         env_file = ".env"

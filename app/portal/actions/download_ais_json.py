@@ -21,6 +21,7 @@ import random
 import re
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -35,8 +36,13 @@ logger = logging.getLogger(__name__)
 _PAGE_TIMEOUT_MS = 20_000
 _DIALOG_TIMEOUT_MS = 20_000
 _DOWNLOAD_TIMEOUT_S = 30.0
-_ACTIVITY_HISTORY_TIMEOUT_S = 60.0
+_ACTIVITY_HISTORY_TIMEOUT_S = 180.0
 _ACTIVITY_POLL_INTERVAL_S = 5.0
+_IST = timezone(timedelta(hours=5, minutes=30))
+_MONTH_ABBRS = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
 _CAPTCHA_ERROR_GRACE_S = 3.0
 _RETRY_SETTLE_MS = 1_000
 
@@ -251,12 +257,12 @@ async def _open_download_modal(page: Page, financial_year: str) -> str:
         await ais_download_btn.first.click()
         return "opened"
 
-    broad_btn = page.locator("button:visible").filter(
+    card_btn = ais_card.locator("button:visible").filter(
         has_text=re.compile(r"\bDownload\b", re.I)
     )
-    if await _visible(broad_btn, timeout=2_000):
-        logger.info("Clicking fallback Download button on AIS tab url=%s", page.url)
-        await broad_btn.first.click()
+    if await _visible(card_btn, timeout=2_000):
+        logger.info("Clicking AIS card Download button url=%s", page.url)
+        await card_btn.first.click()
         return "opened"
 
     logger.warning("Download button not found on AIS tab url=%s", page.url)
@@ -436,6 +442,18 @@ _ACTIVITY_DOWNLOAD_SELECTOR = (
 )
 
 
+def _today_ist_date_regex() -> re.Pattern[str]:
+    now = datetime.now(_IST).date()
+    day_pat = rf"0?{now.day}"
+    month_num = f"{now.month:02d}"
+    month_abbr = _MONTH_ABBRS[now.month - 1]
+    return re.compile(
+        rf"\b(?:{day_pat}[\s/-](?:{month_num}|{month_abbr})[\s/-]{now.year}|"
+        rf"{now.year}-{month_num}-{now.day:02d})\b",
+        re.I,
+    )
+
+
 async def _find_activity_download_icon(
     page: Page,
     *,
@@ -450,11 +468,13 @@ async def _find_activity_download_icon(
             icon = ref_rows.first.locator(_ACTIVITY_DOWNLOAD_SELECTOR)
             if await icon.count() > 0 and await icon.first.is_visible():
                 return icon.first
+        return None
 
-    # Fallback: newest row for AIS Downloaded - JSON matching this F.Y.
+    # Only when no Reference ID was parsed from the modal: match today's row for this F.Y.
     fy_rows = (
         rows.filter(has_text=re.compile(r"AIS\s+Downloaded\s*-\s*JSON", re.I))
         .filter(has_text=_fy_regex(financial_year))
+        .filter(has_text=_today_ist_date_regex())
     )
     if await fy_rows.count() > 0:
         icon = fy_rows.first.locator(_ACTIVITY_DOWNLOAD_SELECTOR)
@@ -521,7 +541,17 @@ async def _download_from_activity_history(
         return None
 
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + _ACTIVITY_HISTORY_TIMEOUT_S
+    timeout_s = max(
+        30.0,
+        float(
+            getattr(
+                settings,
+                "AIS_ACTIVITY_HISTORY_TIMEOUT_SECONDS",
+                _ACTIVITY_HISTORY_TIMEOUT_S,
+            )
+        ),
+    )
+    deadline = loop.time() + timeout_s
     icon: Locator | None = None
     while loop.time() < deadline:
         await _wait_for_spinner(page)
