@@ -52,3 +52,26 @@ async def test_claim_skips_when_client_already_running(monkeypatch) -> None:
     assert claimed is None
     db.rollback.assert_awaited()
     db.commit.assert_not_awaited()
+
+
+def test_password_check_is_ordered_ahead_of_other_jobs() -> None:
+    pytest.importorskip("sqlalchemy")
+    from sqlalchemy.dialects import postgresql
+
+    from app.portal.store import PASSWORD_CHECK_WORKFLOW, claim_rank_for
+
+    assert claim_rank_for(PASSWORD_CHECK_WORKFLOW, "advisor-1") == 0
+    assert claim_rank_for("CHECK_ITR_VERIFICATION", "advisor-1") == 1
+    assert claim_rank_for(PASSWORD_CHECK_WORKFLOW, "cron-silent") == 2
+    assert claim_rank_for("CHECK_ITR_VERIFICATION", "cron") == 2
+
+    from app.portal import store
+
+    compiled = str(
+        store.queued_claim_statement().compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "CHECK_PORTAL_PASSWORD" in compiled
+    assert "cron%" in compiled

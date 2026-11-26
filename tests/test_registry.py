@@ -14,6 +14,7 @@ def test_check_itr_workflow_registered() -> None:
     assert get_runner("DOWNLOAD_ITR_JSON") is not None
     assert get_runner("DOWNLOAD_AIS_JSON") is not None
     assert get_runner("CHECK_FORM67") is not None
+    assert get_runner("CHECK_PORTAL_PASSWORD") is not None
     assert get_runner("CHECK_E_PROCEEDINGS_NOTICES") is not None
     assert get_runner("CHECK_OUTSTANDING_DEMAND") is not None
     assert get_runner("FETCH_FOREIGN_ASSETS") is not None

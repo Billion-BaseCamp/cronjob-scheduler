@@ -15,7 +15,7 @@ import boto3
 from app.core.config import settings
 from app.portal.ais_json import ais_json_s3_key
 from app.portal.foreign_assets import foreign_assets_pdf_key
-from app.portal.itr_json import itr_json_s3_key
+from app.portal.itr_json import itr_file_s3_key, itr_json_s3_key
 
 logger = logging.getLogger(__name__)
 
@@ -148,25 +148,57 @@ async def upload_itr_json(
     payload: bytes,
 ) -> str:
     """Store one ITR JSON. A later download for the same client and year overwrites it."""
+    return await _upload_itr_file(
+        assessment_year,
+        payload,
+        key=itr_json_s3_key(client_id, assessment_year),
+        content_type="application/json",
+        label="ITR JSON",
+    )
+
+
+async def upload_itr_file(
+    client_id: UUID | str,
+    assessment_year: str,
+    payload: bytes,
+    file_format: str,
+) -> str:
+    """Store the year's ITR file. JSON and XML use separate keys and overwrite themselves."""
+    content_type = "application/xml" if file_format == "xml" else "application/json"
+    label = "ITR XML" if file_format == "xml" else "ITR JSON"
+    return await _upload_itr_file(
+        assessment_year,
+        payload,
+        key=itr_file_s3_key(client_id, assessment_year, file_format),
+        content_type=content_type,
+        label=label,
+    )
+
+
+async def _upload_itr_file(
+    assessment_year: str,
+    payload: bytes,
+    *,
+    key: str,
+    content_type: str,
+    label: str,
+) -> str:
     bucket = (settings.S3_BUCKET_NAME or "").strip()
-    key = itr_json_s3_key(client_id, assessment_year)
     if not bucket:
         raise JsonUploadError("S3 bucket is not configured.")
     try:
-        await asyncio.to_thread(
-            _put_object, bucket, key, payload, "application/json"
-        )
+        await asyncio.to_thread(_put_object, bucket, key, payload, content_type)
     except Exception as exc:
         code = ""
         response = getattr(exc, "response", None)
         if isinstance(response, dict):
             code = (response.get("Error") or {}).get("Code") or ""
         if code == "AccessDenied":
-            raise JsonUploadError("S3 denied PutObject for the ITR JSON.") from exc
+            raise JsonUploadError(f"S3 denied PutObject for the {label}.") from exc
         raise JsonUploadError(
-            f"Could not store the A.Y. {assessment_year} ITR JSON."
+            f"Could not store the A.Y. {assessment_year} {label}."
         ) from exc
-    logger.info("Uploaded ITR JSON s3://%s/%s", bucket, key)
+    logger.info("Uploaded %s s3://%s/%s", label, bucket, key)
     return key
 
 

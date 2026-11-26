@@ -1,10 +1,12 @@
 """Which harvested notices need an advisor, and the email copy for that.
 
-Sent for every completed check that found notices needing action: scheduled
-runs, and single or bulk checks started from tax-engine. Not sent for
-``cron-silent`` runs, or when the same pending notices were already emailed
-for that client in the last ``ALERT_REPEAT_HOURS``. Login and technical
-failures are recorded on the job and are not emailed.
+e-Proceedings, and an outstanding-demand check started by a person, send one
+mail per client when that check finds notices needing action. A scheduled outstanding-demand run does not: on the 1st and the 16th it
+sends two reports per RM after the batch finishes (see
+``outstanding_demand_report``). Not sent for ``cron-silent``
+runs, or when the same pending notices were already emailed for that client
+in the last ``ALERT_REPEAT_HOURS``. Login and technical failures are recorded
+on the job and are not emailed.
 """
 
 from __future__ import annotations
@@ -359,3 +361,129 @@ def render_action_required_email(
         "</div>"
     )
     return subject, text, html
+
+
+DEMAND_REPORT_ACTION = "action_required"
+DEMAND_REPORT_RESPONDED = "response_submitted"
+
+_DEMAND_REPORT_SUBJECT = {
+    DEMAND_REPORT_ACTION: "Outstanding Demand Report - Action Required",
+    DEMAND_REPORT_RESPONDED: "Outstanding Demand Report - Response Submitted",
+}
+_REPORT_HEADERS = (
+    "Client", "PAN", "AY", "Section", "Demand ref (DIN)", "Raised on",
+    "Outstanding", "Interest", "Status", "Details",
+)
+XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def outstanding_demand_report_filename(kind: str, checked_at: datetime) -> str:
+    stamp = checked_at.astimezone(IST).strftime("%d-%b-%Y")
+    if kind == DEMAND_REPORT_ACTION:
+        return f"Outstanding-Demand-Action-Required-{stamp}.xlsx"
+    return f"Outstanding-Demand-Response-Submitted-{stamp}.xlsx"
+
+
+def _report_details(notice: Mapping[str, Any], *, responded: bool) -> str:
+    parts = []
+    response = notice.get("response_type")
+    if response and str(response).strip():
+        parts.append(f"Response: {' '.join(str(response).split())}")
+    for label, key in (
+        ("AO", "ao_response"),
+        ("Rectification", "rectification_rights"),
+        ("Act", "applicable_act"),
+    ):
+        value = notice.get(key)
+        if value and str(value).strip():
+            parts.append(f"{label}: {' '.join(str(value).split())}")
+    if parts:
+        return _clip(" · ".join(parts))
+    if responded:
+        return "Extinguished" if notice.get("is_extinguished") else "Response filed"
+    return "No response filed"
+
+
+def _report_demand_line(notice: Mapping[str, Any], *, responded: bool) -> str:
+    ay = notice.get("assessment_year") or "—"
+    section = notice.get("notice_section") or "—"
+    din = notice.get("din") or "—"
+    raised = _show_date(notice.get("date_of_demand_raised"))
+    return (
+        f"- AY {ay} · u/s {section} · DIN {din}\n"
+        f"  Outstanding {_inr(notice.get('outstanding_demand_amount'))}"
+        f" · interest {_inr(_demand_interest(notice))} · raised {raised}\n"
+        f"  Status: {_cell(notice.get('current_status'))}\n"
+        f"  Details: {_report_details(notice, responded=responded)}"
+    )
+
+
+def _report_cells(client_name: str, pan: Optional[str], notice: Mapping[str, Any], *, responded: bool):
+    return [
+        (_cell(client_name), ""),
+        (mask_pan(pan), _NOWRAP),
+        (_cell(notice.get("assessment_year")), _NOWRAP),
+        (_cell(notice.get("notice_section")), _NOWRAP),
+        (_cell(notice.get("din")), ""),
+        (_show_date(notice.get("date_of_demand_raised")), _NOWRAP),
+        (_inr(notice.get("outstanding_demand_amount")), _NOWRAP),
+        (_inr(_demand_interest(notice)), _NOWRAP),
+        (_cell(notice.get("current_status")), ""),
+        (_report_details(notice, responded=responded), ""),
+    ]
+
+
+def render_outstanding_demand_report(
+    *,
+    kind: str,
+    advisor_first_name: Optional[str],
+    clients: list[Mapping[str, Any]],
+    filename: str,
+    checked_at: Optional[datetime] = None,
+) -> tuple[str, str, str]:
+    """One RM report. ``clients`` entries have name, pan, and notices for this kind only."""
+    responded = kind == DEMAND_REPORT_RESPONDED
+    when = (
+        checked_at.astimezone(IST).strftime("%d-%b-%Y %H:%M IST")
+        if checked_at
+        else "just now"
+    )
+    count = len(clients)
+    who = "1 of your clients" if count == 1 else f"{count} of your clients"
+    if responded:
+        found = f"outstanding demands where a response is already filed for {who}"
+    else:
+        found = f"outstanding demands with no response filed for {who}"
+    greeting = f"Hi {advisor_first_name}," if (advisor_first_name or "").strip() else "Hi,"
+    attachment = f"The attached workbook, {filename}, has one row per demand."
+    footer = f"Checked on {when}."
+
+    blocks: list[str] = []
+    rows: list[list[tuple[str, str]]] = []
+    for client in clients:
+        name = client.get("name") or "Unnamed client"
+        pan = client.get("pan")
+        notices = list(client.get("notices") or [])
+        blocks.append(
+            f"{name} · PAN {mask_pan(pan)}\n"
+            + "\n".join(_report_demand_line(notice, responded=responded) for notice in notices)
+        )
+        rows.extend(_report_cells(name, pan, notice, responded=responded) for notice in notices)
+
+    text = (
+        f"{greeting}\n\n"
+        f"The Income Tax portal check found {found}.\n"
+        f"{attachment}\n\n"
+        + "\n\n".join(blocks)
+        + f"\n\n{footer}\n"
+    )
+    html = (
+        f'<div style="{_BODY_STYLE}">'
+        f'<p style="{_P_STYLE}">{escape(greeting)}</p>'
+        f'<p style="{_P_STYLE}">The Income Tax portal check found {escape(found)}.</p>'
+        f'<p style="{_P_STYLE}">{escape(attachment)}</p>'
+        f"{_html_table(_REPORT_HEADERS, rows)}"
+        f'<p style="{_P_STYLE}">{escape(footer)}</p>'
+        "</div>"
+    )
+    return _DEMAND_REPORT_SUBJECT[kind], text, html

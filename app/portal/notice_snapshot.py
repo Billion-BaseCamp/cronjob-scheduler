@@ -4,11 +4,12 @@ The table is one row per client + source. Success replaces that source only.
 Failure updates the last-attempt columns and leaves the previous notices.
 
 Email goes out when the job completed and found notices needing action,
-whoever started it, except ``cron-silent`` runs. It is skipped when every
-pending notice was already emailed for this client in the last
-``ALERT_REPEAT_HOURS``. Login problems are not emailed: an empty
-``clients.it_portal_pass`` already marks the client as needing a password.
-A send failure never fails the job.
+whoever started it, except ``cron-silent`` runs and a scheduled outstanding-
+demand check. That monthly run emails each RM after the batch finishes.
+A per-client mail is skipped when every pending notice was already emailed
+for this client in the last ``ALERT_REPEAT_HOURS``. Login problems are not
+emailed: an empty ``clients.it_portal_pass`` already marks the client as
+needing a password. A send failure never fails the job.
 """
 
 from __future__ import annotations
@@ -235,6 +236,8 @@ async def record_notice_outcome(
 
     requested_by = getattr(job, "requested_by_sub", None)
     if not emails_allowed(requested_by):
+        return
+    if source == "outstanding_demand" and is_scheduled(requested_by):
         return
     if error_code or (getattr(job, "status", None) or "") != "completed":
         return

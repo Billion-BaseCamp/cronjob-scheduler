@@ -5,10 +5,15 @@ portal AY in ``assessment_year`` — use it as-is. Do not FY+1 (that would
 open the next year on the portal).
 
 List page (``#/dashboard/itrStatus``, ``app-itr-status``):
-  1. Open Filter (``button#filterbtn1``)
-  2. Select AY, click Assessment Year label to close the overlay, apply
-     (``button#okButton``)
-  3. Among remaining cards, open View Details on the latest Filing Date
+  1. Set Items per page to the largest value. Then click the footer
+     View More (the button beside Back, not the one inside a card) and
+     the next-page arrow until neither is available. Page 1 has no
+     View More; it appears on the last page of the short list, and that
+     click grows the list so the year filter contains every year.
+  2. Open Filter (``button#filterbtn1``)
+  3. Click Reset, select AY, click the Assessment Year label to close
+     the overlay, apply (``button#okButton``)
+  4. Among remaining cards, open View Details on the latest Filing Date
 
 Lifecycle page (``app-itr-status-life-cycle``): read Filing Type from
 ``div.ftype mat-label.leftSideVal`` next to the ``Filing Type`` label, and
@@ -44,7 +49,9 @@ _ITRV_RECEIVED = "itrv received"
 _FILING_TYPE_LABEL_RE = re.compile(r"Filing Type")
 FILTER_OPEN_SELECTOR = "button#filterbtn1"
 FILTER_APPLY_SELECTOR = "button#okButton"
+FILTER_RESET_SELECTOR = "div.filterBox button.normal-button-tertiary"
 FILTER_PANEL_SELECTOR = "div.filterBox"
+_FILTER_RESET_RE = re.compile(r"^\s*Reset\s*$")
 AY_SELECT_SELECTOR = 'div.filterBox mat-select[formcontrolname="ay"]'
 AY_FILTER_LABEL_SELECTOR = "mat-label.filterLabel"
 OVERLAY_BACKDROP_SELECTOR = (
@@ -215,21 +222,408 @@ async def _dismiss_year_overlay(page: Page) -> None:
         await backdrop.last.wait_for(state="hidden", timeout=5_000)
 
 
-async def _select_assessment_year(page: Page, ay: str) -> None:
+_SELECT_PANEL = (
+    ".cdk-overlay-pane .mat-mdc-select-panel, "
+    ".cdk-overlay-pane .mat-select-panel"
+)
+FILTER_APPLIED = "applied"
+FILTER_NOT_LISTED = "not_listed"
+FILTER_FAILED = "failed"
+
+
+def _year_option(page: Page, ay: str) -> Locator:
+    return page.locator("mat-option").filter(
+        has_text=re.compile(rf"^\s*{re.escape(ay)}\s*$")
+    )
+
+
+async def _option_shown(option: Locator) -> bool:
+    try:
+        return await option.count() > 0 and await option.first.is_visible()
+    except PlaywrightError:
+        return False
+
+
+async def _scroll_year_panel(page: Page) -> bool:
+    panel = page.locator(_SELECT_PANEL)
+    if await panel.count() == 0:
+        return False
+    return bool(
+        await panel.first.evaluate(
+            """el => {
+                const before = el.scrollTop;
+                const step = Math.max(el.clientHeight - 8, 40);
+                el.scrollTop = Math.min(el.scrollTop + step, el.scrollHeight);
+                return el.scrollTop !== before;
+            }"""
+        )
+    )
+
+
+async def _close_filter_dialog(page: Page) -> None:
+    try:
+        await page.keyboard.press("Escape")
+    except PlaywrightError:
+        pass
+    try:
+        apply_btn = page.locator(FILTER_APPLY_SELECTOR)
+        if await apply_btn.count() and await apply_btn.first.is_visible():
+            await page.locator(FILTER_OPEN_SELECTOR).click()
+    except PlaywrightError:
+        pass
+
+
+async def _select_assessment_year(page: Page, ay: str) -> bool:
+    """Select the year. False means the open list does not contain it."""
     select = page.locator(AY_SELECT_SELECTOR)
     await select.wait_for(state="visible", timeout=_FILTER_TIMEOUT_MS)
     await select.click()
-    option = page.locator("mat-option").filter(
-        has_text=re.compile(rf"^\s*{re.escape(ay)}\s*$")
-    )
-    await option.first.wait_for(state="visible", timeout=_FILTER_TIMEOUT_MS)
-    await option.first.click()
+    option = _year_option(page, ay)
+    for _ in range(40):
+        if await _option_shown(option):
+            await option.first.click()
+            await _dismiss_year_overlay(page)
+            return True
+        if not await _scroll_year_panel(page):
+            break
+        await page.wait_for_timeout(100)
+    seen: list[str] = []
+    try:
+        nodes = page.locator("mat-option")
+        count = min(await nodes.count(), 40)
+        for index in range(count):
+            text = " ".join((await nodes.nth(index).inner_text()).split())
+            if text:
+                seen.append(text)
+    except PlaywrightError:
+        pass
+    logger.info("A.Y. %s is not in the filter. Options seen: %s", ay, seen)
     await _dismiss_year_overlay(page)
+    return False
 
 
-async def _apply_ay_filter(page: Page, assessment_year: str) -> bool:
+_VIEW_MORE_RE = re.compile(r"^\s*View\s+More\s*$", re.I)
+_RANGE_OF_RE = re.compile(r"(\d+)\s*[–-]\s*(\d+)\s+of\s+(\d+)", re.I)
+_PAGES_RE = re.compile(r"(\d+)\s+of\s+(\d+)\s+pages?", re.I)
+_LIST_PAGINATOR = "app-itr-status mat-paginator"
+_PAGE_SIZE_SELECT = (
+    ".mat-mdc-paginator-page-size mat-select, .mat-paginator-page-size mat-select"
+)
+_PAGE_SIZE_TOUCH = ".mat-mdc-paginator-page-size .mat-mdc-paginator-touch-target"
+_PAGE_SIZE_VALUE = ".mat-mdc-select-value-text, .mat-select-value-text"
+_PAGE_SIZE_OPTION = ".cdk-overlay-pane mat-option"
+_NEXT_PAGE = (
+    "button.mat-mdc-paginator-navigation-next, "
+    "button.mat-paginator-navigation-next"
+)
+_RANGE_LABEL = ".mat-mdc-paginator-range-label, .mat-paginator-range-label"
+_VIEW_MORE_CONTAINER = "app-itr-status .viewMoreBtnContainer button"
+_LOAD_STEPS = 30
+
+
+def _page_size_number(text: str) -> int | None:
+    digits = re.sub(r"\D", "", text or "")
+    if not digits:
+        return None
+    return int(digits)
+
+
+def _range_has_more(text: str) -> bool:
+    """True when the pager label still has a later page or a later item."""
+    match = _RANGE_OF_RE.search(text or "")
+    if match is not None and int(match.group(2)) < int(match.group(3)):
+        return True
+    pages = _PAGES_RE.search(text or "")
+    return pages is not None and int(pages.group(1)) < int(pages.group(2))
+
+
+def _list_paginator(page: Page) -> Locator:
+    return page.locator(_LIST_PAGINATOR)
+
+
+async def _scroll_list_footer(page: Page) -> None:
+    try:
+        await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+    except PlaywrightError:
+        pass
+    paginator = _list_paginator(page)
+    if await paginator.count() == 0:
+        return
+    try:
+        await paginator.last.scroll_into_view_if_needed(timeout=2_000)
+    except PlaywrightError:
+        pass
+
+
+async def _dom_disabled(node: Locator) -> bool:
+    """The pager button can sit in the DOM without a box Playwright calls visible."""
+    try:
+        return bool(
+            await node.evaluate(
+                """el => !!(
+                    el.disabled
+                    || el.getAttribute('aria-disabled') === 'true'
+                    || el.classList.contains('mat-mdc-button-disabled')
+                    || el.classList.contains('mat-button-disabled')
+                )"""
+            )
+        )
+    except PlaywrightError:
+        return True
+
+
+async def _click_control(node: Locator) -> None:
+    try:
+        await node.scroll_into_view_if_needed(timeout=2_000)
+    except PlaywrightError:
+        pass
+    try:
+        if await node.is_visible():
+            await node.click(timeout=3_000)
+            return
+    except PlaywrightTimeoutError:
+        pass
+    await node.evaluate("el => el.click()")
+
+
+async def _range_text(page: Page) -> str:
+    label = _list_paginator(page).locator(_RANGE_LABEL)
+    if await label.count() == 0:
+        return ""
+    try:
+        return " ".join((await label.first.inner_text()).split())
+    except PlaywrightError:
+        return ""
+
+
+async def _wait_range_change(page: Page, before: str) -> None:
+    for _ in range(32):
+        await page.wait_for_timeout(250)
+        if await _range_text(page) != before:
+            return
+
+
+async def _close_page_size_menu(page: Page) -> None:
+    backdrop = page.locator(OVERLAY_BACKDROP_SELECTOR)
+    try:
+        if await backdrop.count() == 0:
+            return
+        await page.keyboard.press("Escape")
+        await backdrop.first.wait_for(state="hidden", timeout=5_000)
+    except (PlaywrightTimeoutError, PlaywrightError):
+        logger.warning("Items per page menu is still open", exc_info=True)
+
+
+async def _shown_page_size(page: Page) -> int | None:
+    value = _list_paginator(page).locator(_PAGE_SIZE_SELECT).locator(_PAGE_SIZE_VALUE)
+    if await value.count() == 0:
+        return None
+    try:
+        text = " ".join((await value.first.inner_text()).split())
+    except PlaywrightError:
+        return None
+    return _page_size_number(text)
+
+
+async def _open_page_size_menu(paginator: Locator) -> None:
+    """The touch target is aria-hidden on View Filed Returns. Click the select."""
+    select = paginator.locator(_PAGE_SIZE_SELECT)
+    touch = paginator.locator(_PAGE_SIZE_TOUCH)
+    if await touch.count():
+        try:
+            if await touch.first.is_visible():
+                await touch.first.click(timeout=2_000)
+                return
+        except PlaywrightError:
+            pass
+    if await select.count() == 0:
+        return
+    try:
+        await select.first.click(timeout=2_000)
+    except PlaywrightTimeoutError:
+        await select.first.evaluate("el => el.click()")
+
+
+async def _set_largest_page_size(page: Page) -> None:
+    """The short list is 6 per page. The largest option loads more before paging."""
+    await _scroll_list_footer(page)
+    paginator = _list_paginator(page)
+    select = paginator.locator(_PAGE_SIZE_SELECT)
+    try:
+        if await select.count() == 0:
+            return
+        await _open_page_size_menu(paginator)
+        options = page.locator(_PAGE_SIZE_OPTION)
+        await options.first.wait_for(state="visible", timeout=_FILTER_TIMEOUT_MS)
+        sizes: list[tuple[int, int]] = []
+        count = await options.count()
+        for index in range(count):
+            text = " ".join((await options.nth(index).inner_text()).split())
+            size = _page_size_number(text)
+            if size is not None:
+                sizes.append((size, index))
+        if not sizes:
+            return
+        size, index = max(sizes)
+        before = await _range_text(page)
+        await options.nth(index).evaluate("el => el.click()")
+        await page.locator(OVERLAY_BACKDROP_SELECTOR).first.wait_for(
+            state="hidden", timeout=5_000
+        )
+        for _ in range(20):
+            if await _shown_page_size(page) == size:
+                break
+            await page.wait_for_timeout(200)
+        if await _range_text(page) == before:
+            await page.wait_for_timeout(300)
+        logger.info("Items per page set to %s", size)
+    except (PlaywrightTimeoutError, PlaywrightError):
+        logger.warning("Could not raise Items per page", exc_info=True)
+    finally:
+        await _close_page_size_menu(page)
+
+
+async def _visible_view_more(nodes: Locator) -> Locator | None:
+    count = await nodes.count()
+    for index in range(count):
+        node = nodes.nth(index)
+        try:
+            in_card = await node.evaluate("el => !!el.closest('mat-card')")
+            if in_card or not await node.is_visible() or not await node.is_enabled():
+                continue
+            text = " ".join((await node.inner_text()).split())
+        except PlaywrightError:
+            continue
+        if text.lower() != "view more":
+            continue
+        return node
+    return None
+
+
+async def _footer_view_more(page: Page) -> Locator | None:
+    """The button beside Back. The View More inside a card only expands that card."""
+    found = await _visible_view_more(page.locator(_VIEW_MORE_CONTAINER))
+    if found is not None:
+        return found
+    nodes = page.locator("app-itr-status button").filter(has_text=_VIEW_MORE_RE)
+    count = await nodes.count()
+    for index in range(count):
+        node = nodes.nth(index)
+        try:
+            beside_back = await node.evaluate(
+                """el => {
+                    if (el.closest('mat-card')) return false;
+                    let parent = el.parentElement;
+                    for (let depth = 0; depth < 4 && parent; depth += 1) {
+                        const back = [...parent.querySelectorAll('button')].find(button =>
+                            /^\\s*<?\\s*Back\\s*$/i.test(button.innerText || '')
+                        );
+                        if (back && back !== el && !back.closest('mat-card')) return true;
+                        parent = parent.parentElement;
+                    }
+                    return false;
+                }"""
+            )
+            if not beside_back or not await node.is_visible() or not await node.is_enabled():
+                continue
+        except PlaywrightError:
+            continue
+        return node
+    return None
+
+
+async def _enabled_next(page: Page) -> Locator | None:
+    await _scroll_list_footer(page)
+    buttons = _list_paginator(page).locator(_NEXT_PAGE)
+    count = await buttons.count()
+    fallback: Locator | None = None
+    for index in range(count):
+        node = buttons.nth(index)
+        if await _dom_disabled(node):
+            continue
+        try:
+            if await node.is_visible():
+                return node
+        except PlaywrightError:
+            pass
+        if fallback is None:
+            fallback = node
+    return fallback
+
+
+async def _click_view_more(page: Page) -> None:
+    """Load every filing before Filter. View More is absent until the last short page."""
+    try:
+        await _set_largest_page_size(page)
+        seen: set[tuple[str, str]] = set()
+        for _ in range(_LOAD_STEPS):
+            await _scroll_list_footer(page)
+            view_more = await _footer_view_more(page)
+            nxt = await _enabled_next(page)
+            before = await _range_text(page)
+            if view_more is None and nxt is None:
+                if _range_has_more(before):
+                    logger.warning(
+                        "Filed-return range %s still has another page, but Next is not usable",
+                        before,
+                    )
+                else:
+                    logger.info(
+                        "Filed-return list is loaded (%s cards, %s)",
+                        await page.locator(CARD_SELECTOR).count(),
+                        before or "no range",
+                    )
+                return
+            action = "View More" if view_more is not None else "next page"
+            if (action, before) in seen:
+                logger.info("Filed-return list stopped advancing at %s", before or "the start")
+                return
+            seen.add((action, before))
+            target = view_more if view_more is not None else nxt
+            if target is None:
+                return
+            logger.info("Loading filed returns via %s from %s", action, before or "the first page")
+            await _click_control(target)
+            await _wait_range_change(page, before)
+        logger.warning("Stopped before every filed return was loaded")
+    except (PlaywrightTimeoutError, PlaywrightError):
+        logger.warning("Could not load every filed return before Filter", exc_info=True)
+
+
+async def _reset_filter(page: Page) -> None:
+    """Clear Assessment Year and Filing Type. Leave the dialog open."""
+    reset = page.locator(FILTER_RESET_SELECTOR).filter(has_text=_FILTER_RESET_RE)
+    try:
+        if await reset.count() == 0 or not await reset.first.is_visible():
+            logger.info("Filter Reset is not on the dialog")
+            return
+        if await reset.first.is_disabled():
+            logger.info("Filter Reset is disabled")
+            return
+        logger.info("Clicking Filter Reset")
+        await reset.first.click(timeout=_FILTER_TIMEOUT_MS)
+    except PlaywrightError:
+        logger.warning("Filter Reset did not click", exc_info=True)
+        return
+    select = page.locator(AY_SELECT_SELECTOR)
+    try:
+        if await select.is_visible():
+            return
+    except PlaywrightError:
+        pass
+    logger.info("Filter dialog closed after Reset; opening it again")
+    await page.locator(FILTER_OPEN_SELECTOR).click()
+    await page.locator(FILTER_APPLY_SELECTOR).wait_for(
+        state="visible",
+        timeout=_FILTER_TIMEOUT_MS,
+    )
+
+
+async def _apply_ay_filter(page: Page, assessment_year: str) -> str:
+    """``applied``, ``not_listed`` when the year is absent, or ``failed``."""
     ay = assessment_year.strip()
     try:
+        await _click_view_more(page)
         logger.info("Opening Filter for A.Y. %s", ay)
         await page.locator(FILTER_OPEN_SELECTOR).click()
         await page.locator(FILTER_APPLY_SELECTOR).wait_for(
@@ -240,7 +634,10 @@ async def _apply_ay_filter(page: Page, assessment_year: str) -> bool:
             state="visible",
             timeout=_FILTER_TIMEOUT_MS,
         )
-        await _select_assessment_year(page, ay)
+        await _reset_filter(page)
+        if not await _select_assessment_year(page, ay):
+            await _close_filter_dialog(page)
+            return FILTER_NOT_LISTED
         logger.info("Applying Filter")
         await page.locator(FILTER_APPLY_SELECTOR).click(
             timeout=_FILTER_TIMEOUT_MS
@@ -249,16 +646,11 @@ async def _apply_ay_filter(page: Page, assessment_year: str) -> bool:
             state="hidden",
             timeout=_FILTER_TIMEOUT_MS,
         )
-        return True
+        return FILTER_APPLIED
     except (PlaywrightTimeoutError, PlaywrightError):
         logger.warning("Assessment Year filter did not complete", exc_info=True)
-        try:
-            apply_btn = page.locator(FILTER_APPLY_SELECTOR)
-            if await apply_btn.count() and await apply_btn.first.is_visible():
-                await page.locator(FILTER_OPEN_SELECTOR).click()
-        except PlaywrightError:
-            pass
-        return False
+        await _close_filter_dialog(page)
+        return FILTER_FAILED
 
 
 async def _open_view_details(card: Locator, page: Page) -> bool:
@@ -300,7 +692,9 @@ async def read_status_for_assessment_year(
         logger.warning("No filed-return cards on the page")
         return _not_found(ay)
 
-    await _apply_ay_filter(page, ay)
+    if await _apply_ay_filter(page, ay) == FILTER_NOT_LISTED:
+        logger.info("A.Y. %s is not in the filter list", ay)
+        return _not_found(ay)
 
     cards = _cards_for_ay(page, ay)
     try:

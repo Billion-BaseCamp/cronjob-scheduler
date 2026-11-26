@@ -2,6 +2,7 @@
 Send emails via Microsoft Graph API (Azure AD + MSAL).
 Requires AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, and EMAIL_SENDER.
 """
+import base64
 from typing import Optional
 
 import msal
@@ -65,7 +66,9 @@ class AzureEmailClient:
         *,
         body_html: Optional[str] = None,
         sender: Optional[str] = None,
+        attachments: Optional[list[tuple[str, str, bytes]]] = None,
     ) -> None:
+        """Send one message. ``attachments`` entries are (filename, content type, bytes)."""
         sender_id = sender or self.sender_email
         if not sender_id:
             raise AzureEmailClientError(
@@ -75,26 +78,34 @@ class AzureEmailClient:
         use_html = bool(body_html)
         access_token = self._get_access_token()
         url = GRAPH_SEND_MAIL_URL.format(user_id=sender_id)
-        payload = {
-            "message": {
-                "subject": subject,
-                "body": {
-                    "contentType": "HTML" if use_html else "Text",
-                    "content": body_html if use_html else body_text,
-                },
-                "toRecipients": [
-                    {"emailAddress": {"address": to_email}},
-                ],
-            }
+        message: dict = {
+            "subject": subject,
+            "body": {
+                "contentType": "HTML" if use_html else "Text",
+                "content": body_html if use_html else body_text,
+            },
+            "toRecipients": [
+                {"emailAddress": {"address": to_email}},
+            ],
         }
+        if attachments:
+            message["attachments"] = [
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": name,
+                    "contentType": content_type,
+                    "contentBytes": base64.b64encode(content).decode("ascii"),
+                }
+                for name, content_type, content in attachments
+            ]
         response = requests.post(
             url,
             headers={
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
             },
-            json=payload,
-            timeout=30,
+            json={"message": message},
+            timeout=60 if attachments else 30,
         )
         if response.status_code != 202:
             raise AzureEmailClientError(
