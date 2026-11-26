@@ -28,6 +28,9 @@ _stop = asyncio.Event()
 _SHUTDOWN_WAIT_SECONDS = 120.0
 
 
+_COOLDOWN_WORKFLOWS = frozenset({"DOWNLOAD_AIS_JSON"})
+
+
 async def _heartbeat(job_id: UUID, stop: asyncio.Event) -> None:
     interval = max(5.0, settings.WORKER_HEARTBEAT_SECONDS)
     while not stop.is_set():
@@ -46,21 +49,23 @@ async def _heartbeat(job_id: UUID, stop: asyncio.Event) -> None:
             logger.warning("Heartbeat failed for job %s", job_id, exc_info=True)
 
 
-async def process_one(db, worker_id: str) -> bool:
+async def process_one(db, worker_id: str) -> str | None:
+    """Claim and run at most one queued job. Returns its workflow name or None."""
     job = await claim_next_queued(db, worker_id)
     if job is None:
-        return False
-    runner = get_runner(job.workflow)
+        return None
+    workflow = job.workflow
+    runner = get_runner(workflow)
     if runner is None:
         job.status = "failed"
         job.current_step = "DISPATCH"
         job.error_code = "UNKNOWN_WORKFLOW"
-        job.error_message = f"Unknown workflow {job.workflow!r}"
+        job.error_message = f"Unknown workflow {workflow!r}"
         job.worker_id = None
         job.completed_at = datetime.now(timezone.utc)
         await db.commit()
-        logger.error("Job %s has unknown workflow %s", job.id, job.workflow)
-        return True
+        logger.error("Job %s has unknown workflow %s", job.id, workflow)
+        return workflow
     job_id = job.id
     stop = asyncio.Event()
     hb = asyncio.create_task(_heartbeat(job_id, stop), name=f"heartbeat-{job_id}")
@@ -79,7 +84,7 @@ async def process_one(db, worker_id: str) -> bool:
                 claimed.worker_id = None
                 claimed.completed_at = datetime.now(timezone.utc)
                 await retry_db.commit()
-        return True
+        return workflow
     finally:
         stop.set()
         hb.cancel()
@@ -88,24 +93,33 @@ async def process_one(db, worker_id: str) -> bool:
         except asyncio.CancelledError:
             pass
     logger.info("Job %s finished status=%s slot=%s", job.id, job.status, worker_id)
-    return True
+    return workflow
 
 
 async def _slot(slot: int) -> None:
     worker_id = f"{WORKER_ID}:{slot}"
     logger.info("Portal worker slot %s id=%s", slot, worker_id)
     while not _stop.is_set():
-        claimed = False
+        ran_workflow: str | None = None
         try:
             async with AsyncSessionLocal() as db:
-                claimed = await process_one(db, worker_id)
+                ran_workflow = await process_one(db, worker_id)
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Worker slot %s iteration failed", slot)
         if _stop.is_set():
             return
-        if not claimed:
+        if ran_workflow is not None:
+            if ran_workflow in _COOLDOWN_WORKFLOWS:
+                cooldown = max(0.0, settings.WORKER_JOB_COOLDOWN_SECONDS)
+                if cooldown > 0.0:
+                    try:
+                        await asyncio.wait_for(_stop.wait(), timeout=cooldown)
+                        return
+                    except asyncio.TimeoutError:
+                        pass
+        else:
             try:
                 await asyncio.wait_for(
                     _stop.wait(), timeout=settings.WORKER_POLL_SECONDS
