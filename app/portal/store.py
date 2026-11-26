@@ -5,54 +5,75 @@ from uuid import UUID
 
 from nucleus.models import Client
 from nucleus.models.portal_automation import PortalAutomationJob
-from sqlalchemy import case, exists, func, select, text, update
+from sqlalchemy import and_, case, exists, func, not_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Matches ``cron`` and ``cron-silent``. Advisors' manual checks are claimed first.
 SCHEDULED_REQUESTED_BY_PATTERN = "cron%"
+# An advisor is waiting in the credentials dialog. Claim this before other manual jobs.
+PASSWORD_CHECK_WORKFLOW = "CHECK_PORTAL_PASSWORD"
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def claim_next_queued(
-    db: AsyncSession, worker_id: str
-) -> PortalAutomationJob | None:
-    """Claim the oldest queued job that is safe to open a portal session for.
+def claim_rank_for(workflow: str, requested_by_sub: str | None) -> int:
+    """0 password check, 1 other manual job, 2 scheduled run."""
+    requested_by = requested_by_sub or ""
+    if requested_by.startswith("cron"):
+        return 2
+    if workflow == PASSWORD_CHECK_WORKFLOW:
+        return 0
+    return 1
 
-    Manual jobs go before scheduled ones, so a 1,200-client monthly run does not
-    hold up an advisor's check for hours.
 
-    Skips clients that already have a ``running`` job so two Chromes never share
-    a PAN (Dual Login). Uses a transaction advisory lock per client so two
-    slots cannot claim two queued jobs for the same client in parallel.
-    """
-    scheduled_last = case(
+def queued_claim_statement():
+    """Queued jobs safe to open a portal session for, in claim order."""
+    requested_by = func.coalesce(PortalAutomationJob.requested_by_sub, "")
+    scheduled = requested_by.like(SCHEDULED_REQUESTED_BY_PATTERN)
+    claim_rank = case(
         (
-            func.coalesce(PortalAutomationJob.requested_by_sub, "").like(
-                SCHEDULED_REQUESTED_BY_PATTERN
+            and_(
+                PortalAutomationJob.workflow == PASSWORD_CHECK_WORKFLOW,
+                not_(scheduled),
             ),
-            1,
+            0,
         ),
-        else_=0,
+        (scheduled, 2),
+        else_=1,
     )
     running_clients = (
         select(PortalAutomationJob.client_id)
         .where(PortalAutomationJob.status == "running")
         .distinct()
     )
-    stmt = (
+    return (
         select(PortalAutomationJob)
         .where(
             PortalAutomationJob.status == "queued",
             PortalAutomationJob.client_id.notin_(running_clients),
         )
-        .order_by(scheduled_last, PortalAutomationJob.created_at.asc())
+        .order_by(claim_rank, PortalAutomationJob.created_at.asc())
         .limit(1)
         .with_for_update(skip_locked=True)
     )
-    row = (await db.execute(stmt)).scalars().first()
+
+
+async def claim_next_queued(
+    db: AsyncSession, worker_id: str
+) -> PortalAutomationJob | None:
+    """Claim the next queued job that is safe to open a portal session for.
+
+    A password check goes first, because an advisor is waiting on it. Other
+    manual jobs go next. Scheduled runs go last, so a 1,200-client monthly
+    run does not hold up an advisor's check for hours.
+
+    Skips clients that already have a ``running`` job so two Chromes never share
+    a PAN (Dual Login). Uses a transaction advisory lock per client so two
+    slots cannot claim two queued jobs for the same client in parallel.
+    """
+    row = (await db.execute(queued_claim_statement())).scalars().first()
     if row is None:
         return None
 
