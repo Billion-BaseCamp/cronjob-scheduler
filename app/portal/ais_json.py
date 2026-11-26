@@ -14,46 +14,7 @@ _FY_FULL_RE = re.compile(
 )
 _FY_SHORT_RE = re.compile(r"^(?:F\.?Y\.?\s*)?(\d{2})\s*[-/]\s*(\d{2})$", re.I)
 _HEX_HEAD_RE = re.compile(r"^[0-9a-fA-F]{64}$")
-_CAPTCHA_TOKEN_RE = re.compile(r"\b[A-Za-z0-9]{4,8}\b")
-_SPACED_SINGLE_CHARS_RE = re.compile(r"^(?:[A-Za-z0-9]\s+){3,7}[A-Za-z0-9]$")
-_PROSE_WORDS = frozenset(
-    {
-        "answer",
-        "blank",
-        "cannot",
-        "captcha",
-        "char",
-        "characters",
-        "chars",
-        "code",
-        "empty",
-        "from",
-        "have",
-        "here",
-        "image",
-        "invalid",
-        "none",
-        "only",
-        "output",
-        "please",
-        "read",
-        "reads",
-        "reading",
-        "shows",
-        "shown",
-        "sorry",
-        "text",
-        "that",
-        "there",
-        "these",
-        "this",
-        "unable",
-        "unclear",
-        "value",
-        "visible",
-        "with",
-    }
-)
+_CAPTCHA_TOKEN_RE = re.compile(r"[A-Za-z0-9]{4,8}")
 
 
 def normalize_financial_year(raw: str | None) -> str:
@@ -117,35 +78,13 @@ def sanitize_captcha_text(raw: str | None) -> str | None:
     """Extract a clean alphanumeric captcha solution from LLM output."""
     if not raw:
         return None
-    stripped = raw.strip().strip("`\"'.,:;!")
-    if not stripped:
+    collapsed = re.sub(r"[^A-Za-z0-9]", "", raw.strip())
+    if not collapsed:
         return None
-    if re.fullmatch(r"[A-Za-z0-9]{4,8}", stripped):
-        return stripped
-    if _SPACED_SINGLE_CHARS_RE.fullmatch(stripped):
-        return re.sub(r"\s+", "", stripped)
-
-    candidates = [
-        tok
-        for tok in _CAPTCHA_TOKEN_RE.findall(raw)
-        if tok.lower() not in _PROSE_WORDS
-    ]
-    if not candidates:
-        return None
-
-    def _score(tok: str) -> tuple[int, int]:
-        has_digit = any(ch.isdigit() for ch in tok)
-        has_upper = any(ch.isupper() for ch in tok)
-        has_lower = any(ch.islower() for ch in tok)
-        score = 0
-        if has_digit:
-            score += 4
-        if has_upper and (has_lower or tok.isupper()):
-            score += 3 if (tok.isupper() or any(ch.isupper() for ch in tok[1:])) else 1
-        return (score, 1 if 5 <= len(tok) <= 6 else 0)
-
-    best_idx = max(range(len(candidates)), key=lambda idx: (_score(candidates[idx]), idx))
-    return candidates[best_idx]
+    if 4 <= len(collapsed) <= 8:
+        return collapsed
+    matches = _CAPTCHA_TOKEN_RE.findall(raw)
+    return matches[-1] if matches else None
 
 
 def looks_like_encrypted_ais_bytes(raw: bytes) -> bool:

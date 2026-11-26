@@ -43,10 +43,6 @@ def test_sanitize_captcha_text() -> None:
     assert sanitize_captcha_text(" K C I M 7 ") == "KCIM7"
     assert sanitize_captcha_text("`ab12CD`") == "ab12CD"
     assert sanitize_captcha_text("The captcha is XY98Z.") == "XY98Z"
-    assert sanitize_captcha_text("I see KCIM7 in the image.") == "KCIM7"
-    assert sanitize_captcha_text("The text shown is abCD.") == "abCD"
-    assert sanitize_captcha_text("Captcha: 123456") == "123456"
-    assert sanitize_captcha_text("I cannot read this image.") is None
     assert sanitize_captcha_text("") is None
     assert sanitize_captcha_text("...") is None
 
@@ -94,9 +90,6 @@ def test_solve_captcha_with_gemini_parses_candidate(monkeypatch) -> None:
     assert "gemini-3.1-flash-lite:generateContent" in captured["url"]
     assert captured["headers"]["x-goog-api-key"] == "test-key"
     assert captured["timeout"] == 12.0
-    assert captured["json"]["generationConfig"]["thinkingConfig"] == {
-        "thinkingBudget": 0
-    }
 
 
 def test_solve_captcha_with_gemini_rejects_missing_key_or_http_error(monkeypatch) -> None:

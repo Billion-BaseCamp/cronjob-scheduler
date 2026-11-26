@@ -70,7 +70,6 @@ def _post_gemini(
         "generationConfig": {
             "temperature": 0.0,
             "maxOutputTokens": 256,
-            "thinkingConfig": {"thinkingBudget": 0},
         },
     }
     response = requests.post(
