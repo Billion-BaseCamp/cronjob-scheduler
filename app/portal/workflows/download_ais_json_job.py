@@ -110,6 +110,7 @@ def _result(
     born_on: Any = None,
     dry_run: bool = False,
     ais_logged_out: bool | None = None,
+    archive_recorded: bool | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "workflow": workflow,
@@ -125,6 +126,8 @@ def _result(
         payload["fetched_at"] = fetched_at.isoformat()
     if ais_logged_out is not None:
         payload["ais_logged_out"] = ais_logged_out
+    if archive_recorded is not None:
+        payload["archive_recorded"] = archive_recorded
     if born_on is not None:
         payload["portal_date_of_birth"] = born_on.isoformat()
     if dry_run:
@@ -266,6 +269,7 @@ async def run_download_ais_json_job(db, job, *, workflow: str) -> None:
             s3_key: str | None = None
             file_size: int | None = None
             fetched_at: datetime | None = None
+            archive_recorded: bool | None = None
             if scrape.status == "downloaded" and scrape.payload is not None:
                 try:
                     s3_key = await upload_ais_json(
@@ -284,13 +288,8 @@ async def run_download_ais_json_job(db, job, *, workflow: str) -> None:
 
                 if s3_key is not None and file_size is not None:
                     try:
-                        nested = (
-                            db.begin_nested()
-                            if db is not None and hasattr(db, "begin_nested")
-                            else None
-                        )
-                        if nested is not None and hasattr(nested, "__aenter__"):
-                            async with nested:
+                        async with db.begin_nested():
+                            archive_recorded = bool(
                                 await remember_ais_json_archive(
                                     db,
                                     client_id=job.client_id,
@@ -299,18 +298,9 @@ async def run_download_ais_json_job(db, job, *, workflow: str) -> None:
                                     original_filename=ais_json_filename(pan, fy),
                                     file_size_bytes=file_size,
                                 )
-                        else:
-                            if hasattr(nested, "close"):
-                                nested.close()
-                            await remember_ais_json_archive(
-                                db,
-                                client_id=job.client_id,
-                                itr_return_id=getattr(job, "itr_return_id", None),
-                                s3_key=s3_key,
-                                original_filename=ais_json_filename(pan, fy),
-                                file_size_bytes=file_size,
                             )
                     except Exception:
+                        archive_recorded = False
                         logger.warning(
                             "Failed to record AIS JSON archive for job %s (s3_key=%s); "
                             "S3 file is stored so job will still complete.",
@@ -335,6 +325,7 @@ async def run_download_ais_json_job(db, job, *, workflow: str) -> None:
                 captcha_attempts=scrape.captcha_attempts,
                 fetched_at=fetched_at,
                 born_on=born_on,
+                archive_recorded=archive_recorded,
             )
 
             if scrape.status in {"downloaded", "no_data", "year_not_in_dropdown"}:

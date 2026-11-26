@@ -35,12 +35,15 @@ async def remember_ais_json_archive(
     s3_key: str,
     original_filename: str,
     file_size_bytes: int,
-) -> None:
+) -> bool:
     """Upsert an ``ITRAisJsonArchive`` row for this deterministic S3 key.
 
     Because portal-automation overwrites ``portal-automation/ais-json/{client_id}/{FY}/{PAN}_{FY}.json``,
     reusing an existing row with the same ``(client_id, s3_key)`` avoids duplicate
     archive records and prevents FIFO cleanup from deleting the active S3 object.
+
+    Returns ``True`` when the archive row was written/updated, or ``False`` when
+    the model is unavailable on the installed ``nucleus`` release.
     """
     try:
         from nucleus.models.itr_filling.ais_json_archive import ITRAisJsonArchive
@@ -48,7 +51,7 @@ async def remember_ais_json_archive(
         logger.warning(
             "ITRAisJsonArchive is unavailable on this nucleus release; skipping archive row"
         )
-        return
+        return False
 
     # Serialize concurrent upserts for the same (client_id, s3_key) without
     # requiring a schema-level unique constraint on itr_ais_json_archives.
@@ -71,13 +74,13 @@ async def remember_ais_json_archive(
     ).scalars().first()
 
     if existing is not None:
-        if itr_return_id is not None and existing.itr_return_id is None:
+        if itr_return_id is not None:
             existing.itr_return_id = itr_return_id
         existing.original_filename = original_filename[:255]
         existing.file_size_bytes = file_size_bytes
         existing.updated_at = _now()
         await db.flush()
-        return
+        return True
 
     db.add(
         ITRAisJsonArchive(
@@ -90,3 +93,4 @@ async def remember_ais_json_archive(
         )
     )
     await db.flush()
+    return True

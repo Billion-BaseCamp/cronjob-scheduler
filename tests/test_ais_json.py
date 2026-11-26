@@ -241,18 +241,34 @@ def test_download_ais_json_job_uploads_s3_and_records_archive(monkeypatch) -> No
     )
     expected_key = f"portal-automation/ais-json/{client_id}/2025-26/AXKPS8309K_2025-26.json"
     upload_mock = AsyncMock(return_value=expected_key)
-    archive_mock = AsyncMock()
+    archive_mock = AsyncMock(return_value=True)
+    nested_events: list[str] = []
+
+    class _Savepoint:
+        async def __aenter__(self):
+            nested_events.append("enter")
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            nested_events.append(f"exit:{exc_type.__name__ if exc_type else 'ok'}")
+            return False
+
+    fake_db = MagicMock()
+    fake_db.begin_nested = MagicMock(return_value=_Savepoint())
+
     monkeypatch.setattr(job_mod, "upload_ais_json", upload_mock)
     monkeypatch.setattr(job_mod, "remember_ais_json_archive", archive_mock)
     monkeypatch.setattr(job_mod, "upload_screenshot", AsyncMock(return_value=None))
     monkeypatch.setattr(job_mod, "run_ais_logout", AsyncMock(return_value=True))
     monkeypatch.setattr(job_mod, "run_logout", AsyncMock(return_value=True))
 
-    asyncio.run(job_mod.run_download_ais_json_job(None, job, workflow="DOWNLOAD_AIS_JSON"))
+    asyncio.run(job_mod.run_download_ais_json_job(fake_db, job, workflow="DOWNLOAD_AIS_JSON"))
 
     assert job.status == "completed"
     assert job.error_code is None
     assert job.result["ais_json_s3_key"] == expected_key
+    assert job.result["archive_recorded"] is True
+    assert nested_events == ["enter", "exit:ok"]
     assert job.result["financial_year"] == "2025-26"
     assert job.result["pan"] == "AXKPS8309K"
     assert job.result["captcha_attempts"] == 2
@@ -264,7 +280,7 @@ def test_download_ais_json_job_uploads_s3_and_records_archive(monkeypatch) -> No
         client_id, "AXKPS8309K", "2025-26", b'{"partB":{"sections":[]}}'
     )
     archive_mock.assert_awaited_once_with(
-        None,
+        fake_db,
         client_id=client_id,
         itr_return_id=itr_return_id,
         s3_key=expected_key,
@@ -348,4 +364,347 @@ def test_download_ais_json_job_fails_on_captcha_failure(monkeypatch) -> None:
     assert job.error_code == "CAPTCHA_FAILED"
     assert job.result["captcha_attempts"] == 4
     assert job.result["ais_json_s3_key"] is None
+
+
+def test_download_ais_json_job_completes_when_archive_upsert_fails(monkeypatch) -> None:
+    pytest.importorskip("playwright")
+    from datetime import date
+    from app.portal.actions.download_ais_json import AisJsonDownloadResult
+    from app.portal.actions.login_outcomes import LoginOutcome
+    from app.portal.actions.open_foreign_assets import AisPages
+    from app.portal.actions.read_my_profile import ProfileDate
+    from app.portal.workflows import download_ais_json_job as job_mod
+
+    client_id = uuid4()
+    client = SimpleNamespace(id=client_id, pan_number="AXKPS8309K")
+    job = SimpleNamespace(
+        id=uuid4(),
+        client_id=client_id,
+        itr_return_id=None,
+        assessment_year="2025-26",
+        result=None,
+        current_step=None,
+        status="running",
+        error_code=None,
+        error_message=None,
+        worker_id="worker",
+        completed_at=None,
+    )
+
+    nested_events: list[str] = []
+
+    class _FakeSavepoint:
+        async def __aenter__(self):
+            nested_events.append("enter")
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            nested_events.append(f"exit:{exc_type.__name__ if exc_type else 'ok'}")
+            return False
+
+    fake_db = MagicMock()
+    fake_db.begin_nested = MagicMock(return_value=_FakeSavepoint())
+
+    fake_page = MagicMock()
+    fake_ais_page = MagicMock()
+    fake_browser = MagicMock()
+    fake_browser.close = AsyncMock()
+    fake_pw = MagicMock()
+    fake_pw.stop = AsyncMock()
+
+    monkeypatch.setattr(job_mod.settings, "PORTAL_AUTOMATION_DRY_RUN", False)
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: SimpleNamespace(start=AsyncMock(return_value=fake_pw)),
+    )
+    monkeypatch.setattr(
+        "app.portal.browser.launch_portal_page",
+        AsyncMock(return_value=(fake_browser, fake_page)),
+    )
+    monkeypatch.setattr(job_mod, "get_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(job_mod, "run_login", AsyncMock(return_value=LoginOutcome.SUCCESS))
+    monkeypatch.setattr(
+        job_mod,
+        "read_my_profile",
+        AsyncMock(return_value=ProfileDate(pan="AXKPS8309K", born_on=date(1991, 1, 21))),
+    )
+    monkeypatch.setattr(
+        job_mod,
+        "open_ais_instructions",
+        AsyncMock(return_value=AisPages(page=fake_ais_page)),
+    )
+    monkeypatch.setattr(
+        job_mod,
+        "download_ais_json",
+        AsyncMock(
+            return_value=AisJsonDownloadResult(
+                status="downloaded",
+                financial_year="2025-26",
+                payload=b'{"partB":{"sections":[]}}',
+                captcha_attempts=1,
+            )
+        ),
+    )
+    expected_key = f"portal-automation/ais-json/{client_id}/2025-26/AXKPS8309K_2025-26.json"
+    monkeypatch.setattr(job_mod, "upload_ais_json", AsyncMock(return_value=expected_key))
+    monkeypatch.setattr(
+        job_mod,
+        "remember_ais_json_archive",
+        AsyncMock(side_effect=RuntimeError("db lock timeout")),
+    )
+    monkeypatch.setattr(job_mod, "upload_screenshot", AsyncMock(return_value=None))
+    monkeypatch.setattr(job_mod, "run_ais_logout", AsyncMock(return_value=True))
+    monkeypatch.setattr(job_mod, "run_logout", AsyncMock(return_value=True))
+
+    asyncio.run(job_mod.run_download_ais_json_job(fake_db, job, workflow="DOWNLOAD_AIS_JSON"))
+
+    assert job.status == "completed"
+    assert job.error_code is None
+    assert job.result["ais_json_s3_key"] == expected_key
+    assert job.result["archive_recorded"] is False
+    assert nested_events == ["enter", "exit:RuntimeError"]
+
+
+def test_download_ais_json_job_marks_archive_recorded_false_when_model_missing(
+    monkeypatch,
+) -> None:
+    pytest.importorskip("playwright")
+    from datetime import date
+    from app.portal.actions.download_ais_json import AisJsonDownloadResult
+    from app.portal.actions.login_outcomes import LoginOutcome
+    from app.portal.actions.open_foreign_assets import AisPages
+    from app.portal.actions.read_my_profile import ProfileDate
+    from app.portal.workflows import download_ais_json_job as job_mod
+
+    client_id = uuid4()
+    client = SimpleNamespace(id=client_id, pan_number="AXKPS8309K")
+    job = SimpleNamespace(
+        id=uuid4(),
+        client_id=client_id,
+        itr_return_id=None,
+        assessment_year="2025-26",
+        result=None,
+        current_step=None,
+        status="running",
+        error_code=None,
+        error_message=None,
+        worker_id="worker",
+        completed_at=None,
+    )
+
+    class _Savepoint:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    fake_db = MagicMock()
+    fake_db.begin_nested = MagicMock(return_value=_Savepoint())
+
+    fake_page = MagicMock()
+    fake_ais_page = MagicMock()
+    fake_browser = MagicMock()
+    fake_browser.close = AsyncMock()
+    fake_pw = MagicMock()
+    fake_pw.stop = AsyncMock()
+
+    monkeypatch.setattr(job_mod.settings, "PORTAL_AUTOMATION_DRY_RUN", False)
+    monkeypatch.setattr(
+        "playwright.async_api.async_playwright",
+        lambda: SimpleNamespace(start=AsyncMock(return_value=fake_pw)),
+    )
+    monkeypatch.setattr(
+        "app.portal.browser.launch_portal_page",
+        AsyncMock(return_value=(fake_browser, fake_page)),
+    )
+    monkeypatch.setattr(job_mod, "get_client", AsyncMock(return_value=client))
+    monkeypatch.setattr(job_mod, "run_login", AsyncMock(return_value=LoginOutcome.SUCCESS))
+    monkeypatch.setattr(
+        job_mod,
+        "read_my_profile",
+        AsyncMock(return_value=ProfileDate(pan="AXKPS8309K", born_on=date(1991, 1, 21))),
+    )
+    monkeypatch.setattr(
+        job_mod,
+        "open_ais_instructions",
+        AsyncMock(return_value=AisPages(page=fake_ais_page)),
+    )
+    monkeypatch.setattr(
+        job_mod,
+        "download_ais_json",
+        AsyncMock(
+            return_value=AisJsonDownloadResult(
+                status="downloaded",
+                financial_year="2025-26",
+                payload=b'{"partB":{"sections":[]}}',
+                captcha_attempts=1,
+            )
+        ),
+    )
+    expected_key = f"portal-automation/ais-json/{client_id}/2025-26/AXKPS8309K_2025-26.json"
+    monkeypatch.setattr(job_mod, "upload_ais_json", AsyncMock(return_value=expected_key))
+    monkeypatch.setattr(
+        job_mod,
+        "remember_ais_json_archive",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(job_mod, "upload_screenshot", AsyncMock(return_value=None))
+    monkeypatch.setattr(job_mod, "run_ais_logout", AsyncMock(return_value=True))
+    monkeypatch.setattr(job_mod, "run_logout", AsyncMock(return_value=True))
+
+    asyncio.run(job_mod.run_download_ais_json_job(fake_db, job, workflow="DOWNLOAD_AIS_JSON"))
+
+    assert job.status == "completed"
+    assert job.result["ais_json_s3_key"] == expected_key
+    assert job.result["archive_recorded"] is False
+
+
+def test_remember_ais_json_archive_updates_existing_itr_return_id() -> None:
+    pytest.importorskip("sqlalchemy")
+    from app.portal.ais_json_archive import remember_ais_json_archive
+
+    client_id = uuid4()
+    old_itr_id = uuid4()
+    new_itr_id = uuid4()
+    s3_key = f"portal-automation/ais-json/{client_id}/2025-26/AXKPS8309K_2025-26.json"
+    existing = SimpleNamespace(
+        id=uuid4(),
+        client_id=client_id,
+        itr_return_id=old_itr_id,
+        s3_key=s3_key,
+        original_filename="AXKPS8309K_2025-26.json",
+        file_size_bytes=50,
+        updated_at=None,
+    )
+
+    async def fake_execute(stmt, params=None):
+        res = MagicMock()
+        res.scalars.return_value.first.return_value = existing
+        return res
+
+    db = MagicMock()
+    db.bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+    db.execute = AsyncMock(side_effect=fake_execute)
+    db.flush = AsyncMock()
+    db.add = MagicMock()
+
+    recorded = asyncio.run(
+        remember_ais_json_archive(
+            db,
+            client_id=client_id,
+            itr_return_id=new_itr_id,
+            s3_key=s3_key,
+            original_filename="AXKPS8309K_2025-26.json",
+            file_size_bytes=123,
+        )
+    )
+
+    assert recorded is True
+    assert existing.itr_return_id == new_itr_id
+    assert existing.file_size_bytes == 123
+    db.add.assert_not_called()
+
+    # When itr_return_id is None on a later run, preserve the already-linked id.
+    asyncio.run(
+        remember_ais_json_archive(
+            db,
+            client_id=client_id,
+            itr_return_id=None,
+            s3_key=s3_key,
+            original_filename="AXKPS8309K_2025-26.json",
+            file_size_bytes=124,
+        )
+    )
+    assert existing.itr_return_id == new_itr_id
+
+
+def test_real_async_session_begin_nested_returns_async_context_manager() -> None:
+    pytest.importorskip("sqlalchemy")
+    from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
+
+    session = AsyncSession()
+    tx = session.begin_nested()
+    assert isinstance(tx, AsyncSessionTransaction)
+    assert hasattr(tx, "__aenter__") and hasattr(tx, "__aexit__")
+
+
+def test_remember_ais_json_archive_acquires_advisory_lock() -> None:
+    pytest.importorskip("sqlalchemy")
+    from app.portal.ais_json_archive import remember_ais_json_archive
+
+    client_id = uuid4()
+    s3_key = f"portal-automation/ais-json/{client_id}/2025-26/AXKPS8309K_2025-26.json"
+    executed: list[tuple[str, object]] = []
+
+    async def fake_execute(stmt, params=None):
+        executed.append((str(stmt), params))
+        res = MagicMock()
+        res.scalars.return_value.first.return_value = None
+        return res
+
+    db = MagicMock()
+    db.bind = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+    db.execute = AsyncMock(side_effect=fake_execute)
+    db.flush = AsyncMock()
+    db.add = MagicMock()
+
+    asyncio.run(
+        remember_ais_json_archive(
+            db,
+            client_id=client_id,
+            itr_return_id=None,
+            s3_key=s3_key,
+            original_filename="AXKPS8309K_2025-26.json",
+            file_size_bytes=123,
+        )
+    )
+
+    assert len(executed) == 2
+    assert "pg_advisory_xact_lock" in executed[0][0]
+    assert executed[0][1] == {"lock_key": f"ais-archive:{client_id}:{s3_key}"}
+    db.add.assert_called_once()
+    db.flush.assert_awaited_once()
+
+
+def test_worker_cooldown_applies_only_to_ais_jobs(monkeypatch) -> None:
+    pytest.importorskip("sqlalchemy")
+    from app.portal.worker import loop as worker_loop
+
+    workflows = iter(["CHECK_ITR_VERIFICATION", "DOWNLOAD_AIS_JSON", None])
+    timeouts: list[float] = []
+
+    class _FakeSessionCtx:
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def fake_process_one(db, worker_id: str):
+        return next(workflows)
+
+    async def fake_wait_for(awaitable, timeout):
+        timeouts.append(timeout)
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        if len(timeouts) >= 2:
+            worker_loop._stop.set()
+            return True
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(worker_loop, "AsyncSessionLocal", lambda: _FakeSessionCtx())
+    monkeypatch.setattr(worker_loop, "process_one", fake_process_one)
+    monkeypatch.setattr(worker_loop.settings, "WORKER_JOB_COOLDOWN_SECONDS", 3.0)
+    monkeypatch.setattr(worker_loop.settings, "WORKER_POLL_SECONDS", 2.0)
+    monkeypatch.setattr(worker_loop.asyncio, "wait_for", fake_wait_for)
+
+    worker_loop._stop.clear()
+    try:
+        asyncio.run(worker_loop._slot(0))
+    finally:
+        worker_loop._stop.clear()
+
+    # CHECK_ITR_VERIFICATION did NOT sleep; DOWNLOAD_AIS_JSON slept 3.0s; empty queue slept 2.0s.
+    assert timeouts == [3.0, 2.0]
 
