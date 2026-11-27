@@ -50,6 +50,14 @@ class AisJsonUploadError(Exception):
         self.message = message
 
 
+class Form168TxtUploadError(Exception):
+    """The Form 168 / ATS .txt did not land in S3. The job must fail."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 def _put_object(bucket: str, key: str, body: bytes, content_type: str) -> None:
     client = boto3.client("s3", region_name=settings.S3_REGION)
     client.put_object(
@@ -230,4 +238,39 @@ async def upload_ais_json(
             f"Could not store the F.Y. {financial_year} AIS JSON."
         ) from exc
     logger.info("Uploaded AIS JSON s3://%s/%s", bucket, key)
+    return key
+
+
+async def upload_form_168_txt(
+    *,
+    key: str,
+    payload: bytes,
+    replace_key: str | None = None,
+) -> str:
+    """Store Form 168 / ATS .txt at an advance-tax-26as key. Optionally delete the prior object."""
+    bucket = (settings.S3_BUCKET_NAME or "").strip()
+    if not bucket:
+        raise Form168TxtUploadError("S3 bucket is not configured.")
+    if not key.startswith("advance-tax-26as/"):
+        raise Form168TxtUploadError("Invalid Form 168 S3 key prefix.")
+    try:
+        await asyncio.to_thread(_put_object, bucket, key, payload, "text/plain")
+    except Exception as exc:
+        code = ""
+        response = getattr(exc, "response", None)
+        if isinstance(response, dict):
+            code = (response.get("Error") or {}).get("Code") or ""
+        if code == "AccessDenied":
+            raise Form168TxtUploadError(
+                "S3 denied PutObject for the Form 168 TXT."
+            ) from exc
+        raise Form168TxtUploadError(
+            "Could not store the Form 168 / ATS TXT."
+        ) from exc
+    logger.info("Uploaded Form 168 TXT s3://%s/%s", bucket, key)
+    if replace_key and replace_key != key and replace_key.startswith("advance-tax-26as/"):
+        try:
+            await asyncio.to_thread(_delete_object, bucket, replace_key)
+        except Exception:
+            logger.warning("Could not delete replaced Form 168 TXT %s", replace_key)
     return key

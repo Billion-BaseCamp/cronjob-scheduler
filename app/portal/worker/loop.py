@@ -28,7 +28,7 @@ _stop = asyncio.Event()
 _SHUTDOWN_WAIT_SECONDS = 120.0
 
 
-_COOLDOWN_WORKFLOWS = frozenset({"DOWNLOAD_AIS_JSON"})
+_COOLDOWN_WORKFLOWS = frozenset({"DOWNLOAD_AIS_JSON", "DOWNLOAD_26AS_TXT"})
 
 
 async def _heartbeat(job_id: UUID, stop: asyncio.Event) -> None:

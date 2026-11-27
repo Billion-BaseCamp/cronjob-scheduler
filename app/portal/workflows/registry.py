@@ -11,6 +11,7 @@ from app.portal.workflows.check_portal_password import run_check_portal_password
 from app.portal.workflows.check_itr_status_ay import run_check_itr_status_ay
 from app.portal.workflows.check_itr_verification import run_check_itr_verification
 from app.portal.workflows.download_ais_json import run_download_ais_json
+from app.portal.workflows.download_26as_txt import run_download_26as_txt
 from app.portal.workflows.download_itr_json import run_download_itr_json
 from app.portal.workflows.check_outstanding_demand import run_check_outstanding_demand
 from app.portal.workflows.fetch_foreign_assets import run_fetch_foreign_assets
@@ -22,6 +23,7 @@ REGISTRY: dict[str, Runner] = {
     "CHECK_ITR_STATUS_AY": run_check_itr_status_ay,
     "DOWNLOAD_ITR_JSON": run_download_itr_json,
     "DOWNLOAD_AIS_JSON": run_download_ais_json,
+    "DOWNLOAD_26AS_TXT": run_download_26as_txt,
     "CHECK_FORM67": run_check_form67,
     "CHECK_PORTAL_PASSWORD": run_check_portal_password,
     "CHECK_E_PROCEEDINGS_NOTICES": run_check_e_proceedings_notices,
