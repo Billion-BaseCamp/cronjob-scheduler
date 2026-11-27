@@ -1,4 +1,8 @@
-"""Store Form 168 / ATS .txt into ``advance_tax_26as_uploads`` (file only, no parts)."""
+"""Store Form 168 / ATS .txt into ``advance_tax_26as_uploads`` (file metadata only).
+
+Replaces the S3 object pointer + ``content_hash`` on the quarter's upload row.
+Never deletes Part1–10 — Sync in advance-tax owns parsing and part refresh.
+"""
 
 from __future__ import annotations
 
@@ -6,40 +10,15 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.portal.form_168_txt import current_quarter_number, db_financial_year
 from nucleus.models.advance_tax_models.advance_tax_26as_upload import AdvanceTax26asUpload
 from nucleus.models.advance_tax_models.financial_year import FinancialYear
-from nucleus.models.advance_tax_models.form_26as_models import (
-    Form26ASPart1,
-    Form26ASPart2,
-    Form26ASPart3,
-    Form26ASPart4,
-    Form26ASPart5,
-    Form26ASPart6,
-    Form26ASPart7,
-    Form26ASPart8,
-    Form26ASPart9,
-    Form26ASPart10,
-)
 from nucleus.models.advance_tax_models.quarter import Quarter
 
 logger = logging.getLogger(__name__)
-
-_PART_MODELS = (
-    Form26ASPart1,
-    Form26ASPart2,
-    Form26ASPart3,
-    Form26ASPart4,
-    Form26ASPart5,
-    Form26ASPart6,
-    Form26ASPart7,
-    Form26ASPart8,
-    Form26ASPart9,
-    Form26ASPart10,
-)
 
 
 class Form168StoreError(Exception):
@@ -51,20 +30,6 @@ class Form168StoreError(Exception):
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-async def _delete_parts_for_upload(db: AsyncSession, upload_id: UUID) -> None:
-    for model in _PART_MODELS:
-        tbl = model.__table__
-        if "upload_id" not in tbl.c:
-            continue
-        await db.execute(delete(tbl).where(tbl.c.upload_id == upload_id))
-
-
-async def _delete_upload_metadata(db: AsyncSession, upload: AdvanceTax26asUpload) -> None:
-    await _delete_parts_for_upload(db, upload.id)
-    await db.delete(upload)
-    await db.flush()
 
 
 async def resolve_fy_and_current_quarter(
@@ -118,10 +83,23 @@ async def remember_form_168_upload(
     upload_id: UUID,
     content_hash: str,
 ) -> AdvanceTax26asUpload:
-    """Replace any existing upload for the current quarter; leave parts empty (pending)."""
+    """Upsert file metadata for the current quarter without touching Part1–10.
+
+    - Existing row: update S3 pointer / hash / filename in place (same ``id``).
+    - New row: insert with ``parse_status=pending``.
+    - If the file hash changed on an existing row, set ``parse_status=pending`` so
+      Sync UI can prompt a refresh; parsed parts are left intact.
+    """
     fy, quarter = await resolve_fy_and_current_quarter(
         db, client_id=client_id, tax_year=tax_year
     )
+
+    digest = (content_hash or "").strip().lower()
+    if len(digest) != 64:
+        raise Form168StoreError(
+            "INVALID_CONTENT_HASH",
+            "content_hash must be a 64-character SHA-256 hex digest.",
+        )
 
     existing = (
         await db.execute(
@@ -130,15 +108,26 @@ async def remember_form_168_upload(
             .with_for_update()
         )
     ).scalar_one_or_none()
-    if existing is not None:
-        await _delete_upload_metadata(db, existing)
 
-    digest = (content_hash or "").strip().lower()
-    if len(digest) != 64:
-        raise Form168StoreError(
-            "INVALID_CONTENT_HASH",
-            "content_hash must be a 64-character SHA-256 hex digest.",
+    if existing is not None:
+        prev_hash = (existing.content_hash or "").strip().lower() or None
+        existing.s3_key = s3_key
+        existing.bucket_name = bucket_name
+        existing.original_filename = original_filename[:255]
+        existing.file_size_bytes = file_size_bytes
+        existing.pan = (pan or "")[:10] or None
+        existing.content_hash = digest
+        existing.uploaded_at = _now()
+        if prev_hash != digest:
+            existing.parse_status = "pending"
+        await db.flush()
+        logger.info(
+            "Updated Form 168 upload in place upload_id=%s quarter_id=%s hash_changed=%s",
+            existing.id,
+            quarter.id,
+            prev_hash != digest,
         )
+        return existing
 
     upload = AdvanceTax26asUpload(
         id=upload_id,

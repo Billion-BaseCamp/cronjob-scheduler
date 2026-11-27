@@ -1,7 +1,7 @@
 """DOWNLOAD_26AS_TXT: login, open Form 168 / TRACES ATS, store .txt only, logout.
 
-Does **not** parse Part1–10. Advance-tax Sync owns parsing; freshness is derived
-on the fly from ``parse_status`` + SHA-256 of the S3 object.
+Does **not** parse or delete Part1–10. Replaces the S3 file + upload metadata in
+place. Advance-tax Sync owns parsing / refreshing parts.
 """
 
 from __future__ import annotations
@@ -125,6 +125,7 @@ def _result(
     quarter_id: str | None = None,
     file_size_bytes: int | None = None,
     content_hash: str | None = None,
+    parse_status: str | None = None,
     fetched_at: datetime | None = None,
     born_on: Any = None,
     dry_run: bool = False,
@@ -142,7 +143,7 @@ def _result(
         "file_size_bytes": file_size_bytes,
         "content_hash": content_hash,
         "logged_out": logged_out,
-        "parse_status": "pending" if status == "downloaded" else None,
+        "parse_status": parse_status,
     }
     if traces_logged_out is not None:
         payload["traces_logged_out"] = traces_logged_out
@@ -308,6 +309,7 @@ async def run_download_26as_txt_job(db, job, *, workflow: str) -> None:
             q_num: int | None = None
             file_size: int | None = None
             content_hash: str | None = None
+            parse_status: str | None = None
             fetched_at: datetime | None = None
             upload_recorded = False
 
@@ -382,6 +384,7 @@ async def run_download_26as_txt_job(db, job, *, workflow: str) -> None:
                             )
                             upload_id_str = str(upload.id)
                             quarter_id_str = str(upload.quarter_id)
+                            parse_status = getattr(upload, "parse_status", None) or "pending"
                             upload_recorded = True
                         if old_key and old_key != s3_key and bucket:
                             try:
@@ -438,6 +441,7 @@ async def run_download_26as_txt_job(db, job, *, workflow: str) -> None:
                 quarter_id=quarter_id_str if upload_recorded else None,
                 file_size_bytes=file_size if upload_recorded else None,
                 content_hash=content_hash if upload_recorded else None,
+                parse_status=parse_status if upload_recorded else None,
                 fetched_at=fetched_at,
                 born_on=born_on,
             )
