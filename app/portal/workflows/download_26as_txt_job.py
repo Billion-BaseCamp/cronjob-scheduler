@@ -10,18 +10,24 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.db.database import AsyncSessionLocal
 from app.portal.actions.download_form168_txt import download_form168_txt
 from app.portal.actions.login import run_login
 from app.portal.actions.login_outcomes import LoginOutcome
 from app.portal.actions.logout import run_logout
 from app.portal.actions.open_traces_form168 import open_traces_ats, run_traces_logout
 from app.portal.actions.read_my_profile import read_my_profile
-from app.portal.evidence import Form168TxtUploadError, upload_form_168_txt, upload_screenshot
+from app.portal.evidence import (
+    Form168TxtUploadError,
+    _delete_object,
+    upload_form_168_txt,
+    upload_screenshot,
+)
 from app.portal.evidence_step import (
     EVIDENCE_DOWNLOAD_26AS_TXT,
     EVIDENCE_LOGIN,
@@ -183,15 +189,36 @@ async def _fail_after_login(
     _merge_result(job, payload)
 
 
-async def _existing_s3_key_for_quarter(db, quarter_id) -> str | None:
+async def _existing_upload_for_quarter(
+    db, quarter_id
+) -> tuple[UUID, str] | None:
+    """Return ``(upload_id, s3_key)`` for the quarter, if any."""
     row = (
         await db.execute(
-            select(AdvanceTax26asUpload.s3_key).where(
+            select(AdvanceTax26asUpload.id, AdvanceTax26asUpload.s3_key).where(
                 AdvanceTax26asUpload.quarter_id == quarter_id
             )
         )
-    ).scalar_one_or_none()
-    return row
+    ).first()
+    if row is None:
+        return None
+    return row[0], row[1]
+
+
+async def _delete_s3_key(bucket: str, key: str | None, *, reason: str) -> None:
+    if not bucket or not key or not key.startswith("advance-tax-26as/"):
+        return
+    try:
+        await asyncio.to_thread(_delete_object, bucket, key)
+    except Exception:
+        logger.warning("Could not delete Form 168 object %s (%s)", key, reason)
+
+
+async def _commit_form_168_upload_record(**kwargs):
+    """Persist upload metadata in its own committed transaction (not the job session)."""
+    async with AsyncSessionLocal() as store_db:
+        async with store_db.begin():
+            return await remember_form_168_upload(store_db, **kwargs)
 
 
 async def run_download_26as_txt_job(db, job, *, workflow: str) -> None:
@@ -334,30 +361,35 @@ async def run_download_26as_txt_job(db, job, *, workflow: str) -> None:
             if scrape.status == "downloaded" and scrape.payload is not None:
                 job.current_step = STEPS[4]
                 raw = scrape.payload
-                upload_id = uuid4()
                 q_num = current_quarter_number()
-                key = form_168_s3_key(job.client_id, tax_year, q_num, upload_id)
                 filename = form_168_txt_filename(pan, tax_year)
                 content_hash = sha256_hex(raw)
                 file_size = len(raw)
                 bucket = (settings.S3_BUCKET_NAME or "").strip()
 
                 old_key: str | None = None
+                upload_id = uuid4()
                 try:
                     from app.portal.form_168_upload import resolve_fy_and_current_quarter
 
                     _, quarter = await resolve_fy_and_current_quarter(
                         db, client_id=job.client_id, tax_year=tax_year
                     )
-                    old_key = await _existing_s3_key_for_quarter(db, quarter.id)
+                    existing = await _existing_upload_for_quarter(db, quarter.id)
+                    if existing is not None:
+                        upload_id, old_key = existing
                     quarter_id_str = str(quarter.id)
                 except Form168StoreError as exc:
                     scrape.status = "failed"
                     scrape.error_code = exc.code
                     scrape.error_message = exc.message
 
+                key = form_168_s3_key(job.client_id, tax_year, q_num, upload_id)
+
                 if scrape.status == "downloaded":
                     try:
+                        # Overwrite same key when reusing upload_id; never pass
+                        # replace_key here — old object is removed only after DB commit.
                         s3_key = await upload_form_168_txt(
                             key=key, payload=raw, replace_key=None
                         )
@@ -369,41 +401,36 @@ async def run_download_26as_txt_job(db, job, *, workflow: str) -> None:
 
                 if scrape.status == "downloaded" and s3_key is not None:
                     try:
-                        async with db.begin_nested():
-                            upload = await remember_form_168_upload(
-                                db,
-                                client_id=job.client_id,
-                                tax_year=tax_year,
-                                pan=pan,
-                                s3_key=s3_key,
-                                bucket_name=bucket,
-                                original_filename=filename,
-                                file_size_bytes=file_size,
-                                upload_id=upload_id,
-                                content_hash=content_hash,
-                            )
-                            upload_id_str = str(upload.id)
-                            quarter_id_str = str(upload.quarter_id)
-                            parse_status = getattr(upload, "parse_status", None) or "pending"
-                            upload_recorded = True
-                        if old_key and old_key != s3_key and bucket:
-                            try:
-                                from app.portal.evidence import _delete_object
-
-                                await asyncio.to_thread(
-                                    _delete_object, bucket, old_key
-                                )
-                            except Exception:
-                                logger.warning(
-                                    "Could not delete prior Form 168 object %s",
-                                    old_key,
-                                )
+                        # Own transaction so the row is durable before we drop old_key.
+                        upload = await _commit_form_168_upload_record(
+                            client_id=job.client_id,
+                            tax_year=tax_year,
+                            pan=pan,
+                            s3_key=s3_key,
+                            bucket_name=bucket,
+                            original_filename=filename,
+                            file_size_bytes=file_size,
+                            upload_id=upload_id,
+                            content_hash=content_hash,
+                        )
+                        upload_id_str = str(upload.id)
+                        quarter_id_str = str(upload.quarter_id)
+                        parse_status = getattr(upload, "parse_status", None) or "pending"
+                        upload_recorded = True
                         fetched_at = _now()
+                        if old_key and old_key != s3_key and bucket:
+                            await _delete_s3_key(
+                                bucket, old_key, reason="replaced after DB commit"
+                            )
                     except Form168StoreError as exc:
                         upload_recorded = False
                         scrape.status = "failed"
                         scrape.error_code = exc.code
                         scrape.error_message = exc.message
+                        if s3_key and s3_key != old_key:
+                            await _delete_s3_key(
+                                bucket, s3_key, reason="DB record failed"
+                            )
                     except Exception:
                         upload_recorded = False
                         logger.exception(
@@ -417,6 +444,10 @@ async def run_download_26as_txt_job(db, job, *, workflow: str) -> None:
                             "Form 168 TXT was uploaded to S3, but the upload record "
                             "could not be saved."
                         )
+                        if s3_key and s3_key != old_key:
+                            await _delete_s3_key(
+                                bucket, s3_key, reason="DB record failed"
+                            )
 
             job.current_step = STEPS[5]
             traces_logged_out = await run_traces_logout(traces_page)

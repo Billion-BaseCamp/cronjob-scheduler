@@ -212,11 +212,11 @@ def test_download_26as_txt_job_stores_file_without_parsing(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         job_mod,
-        "remember_form_168_upload",
+        "_commit_form_168_upload_record",
         AsyncMock(return_value=fake_upload),
     )
     monkeypatch.setattr(
-        job_mod, "_existing_s3_key_for_quarter", AsyncMock(return_value=None)
+        job_mod, "_existing_upload_for_quarter", AsyncMock(return_value=None)
     )
     monkeypatch.setattr(
         "app.portal.form_168_upload.resolve_fy_and_current_quarter",
@@ -264,7 +264,7 @@ def test_download_26as_txt_job_stores_file_without_parsing(monkeypatch) -> None:
     assert job.result["content_hash"]
     assert job.result["traces_logged_out"] is True
     assert job.result["logged_out"] is True
-    job_mod.remember_form_168_upload.assert_awaited()
-    kwargs = job_mod.remember_form_168_upload.await_args.kwargs
+    job_mod._commit_form_168_upload_record.assert_awaited()
+    kwargs = job_mod._commit_form_168_upload_record.await_args.kwargs
     assert kwargs["content_hash"] == job.result["content_hash"]
     assert len(kwargs["content_hash"]) == 64
