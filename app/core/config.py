@@ -148,6 +148,12 @@ class Settings:
     S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "")
     S3_REGION: str = os.getenv("S3_REGION", os.getenv("AWS_REGION", "ap-south-1"))
 
+    # Up to 4 Gemini keys for captcha load balancing (round-robin; skip on 429).
+    # Leave unused slots empty. Legacy GEMINI_API_KEY fills slot 1 when KEY_1 is empty.
+    GEMINI_API_KEY_1: str = os.getenv("GEMINI_API_KEY_1", "").strip()
+    GEMINI_API_KEY_2: str = os.getenv("GEMINI_API_KEY_2", "").strip()
+    GEMINI_API_KEY_3: str = os.getenv("GEMINI_API_KEY_3", "").strip()
+    GEMINI_API_KEY_4: str = os.getenv("GEMINI_API_KEY_4", "").strip()
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
     GEMINI_CAPTCHA_MODEL: str = (
         os.getenv("GEMINI_CAPTCHA_MODEL", "gemini-3.1-flash-lite").strip()
