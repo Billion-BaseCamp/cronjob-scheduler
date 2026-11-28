@@ -16,7 +16,12 @@ from app.portal.ais_json import (
     normalize_financial_year,
     sanitize_captcha_text,
 )
-from app.portal.captcha_solver import CaptchaSolveError, solve_captcha_with_gemini
+from app.portal.captcha_solver import (
+    CaptchaSolveError,
+    gemini_api_keys,
+    reset_gemini_key_pool_for_tests,
+    solve_captcha_with_gemini,
+)
 
 
 def test_normalize_financial_year_accepts_common_formats() -> None:
@@ -102,6 +107,93 @@ def test_solve_captcha_with_gemini_rejects_missing_key_or_http_error(monkeypatch
     )
     with pytest.raises(CaptchaSolveError):
         asyncio.run(solve_captcha_with_gemini(b"png", api_key="test-key"))
+
+
+def test_gemini_api_keys_from_numbered_slots_and_legacy(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_1", "key-a"
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_2", "key-b"
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_3", ""
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_4", "key-a"
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY", "ignored"
+    )
+    assert gemini_api_keys() == ["key-a", "key-b"]
+
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_1", ""
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_2", ""
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_4", ""
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY", "legacy-key"
+    )
+    assert gemini_api_keys() == ["legacy-key"]
+
+
+def test_solve_captcha_round_robin_skips_429(monkeypatch) -> None:
+    reset_gemini_key_pool_for_tests()
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_1", "key-1"
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_2", "key-2"
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_3", ""
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY_4", ""
+    )
+    monkeypatch.setattr(
+        "app.portal.captcha_solver.settings.GEMINI_API_KEY", ""
+    )
+    calls: list[str] = []
+
+    class _Resp:
+        def __init__(self, status_code: int, body: dict):
+            self.status_code = status_code
+            self._body = body
+
+        def json(self):
+            return self._body
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        key = (headers or {}).get("x-goog-api-key", "")
+        calls.append(key)
+        if key == "key-1":
+            return _Resp(
+                429,
+                {"error": {"message": "Resource exhausted (RESOURCE_EXHAUSTED)"}},
+            )
+        return _Resp(
+            200,
+            {"candidates": [{"content": {"parts": [{"text": "AB12"}]}}]},
+        )
+
+    monkeypatch.setattr("app.portal.captcha_solver.requests.post", _fake_post)
+
+    answer = asyncio.run(solve_captcha_with_gemini(b"\x89PNG\r\n\x1a\nfake"))
+    assert answer == "AB12"
+    assert "key-1" in calls
+    assert "key-2" in calls
+
+    # key-1 is exhausted; next call should go straight to key-2.
+    calls.clear()
+    answer2 = asyncio.run(solve_captcha_with_gemini(b"\x89PNG\r\n\x1a\nfake"))
+    assert answer2 == "AB12"
+    assert calls == ["key-2"]
 
 
 def test_extract_reference_id() -> None:
